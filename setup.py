@@ -14,7 +14,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         'softioc>=4.6.1',
-        'revpimodio2>=2.8.1',
+        'revpimodio2>=2.8.0',
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
