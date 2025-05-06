@@ -1,27 +1,92 @@
+
 # revpiepics
 
-**revpiepics** is a Python library that allows you to create EPICS Process Variables (PVs) directly from Revolution Pi IOs, using `pythonSoftIoc` and `revpimodio2`.
+**revpiepics** is a Python library that makes it easy to create EPICS Process Variables (PVs) directly from Revolution Pi IOs, using `pythonSoftIoc` and `revpimodio2`.
 
-## Prerequisites
+---
 
-- RevPi Base Module (Connect 5/4/S/SE, Core S/SE)
-- AIO Extension Modules
-- IOs configured using the PiCtory interface
+## ✨ Features
 
-To use this library, you need a 64-bit OS.  
-If that’s not the case, follow this procedure:
+- Simple and fast creation of EPICS PVs from RevPi IOs  
+- Automatic detection of input/output types  
+- Advanced PV configuration (names, units, limits, descriptions)  
+- Built-in IO update loop
 
-👉 [Download and check a compatible image](https://revolutionpi.com/documentation/revpi-images/#download-and-check-image)
+---
 
-## Installation
+## 🔧 Prerequisites
+
+- RevPi Base Module (Connect 5/4/S/SE, Core S/SE)  
+- AIO Extension Modules  
+- IOs configured via the [PiCtory interface](https://revolutionpi.com/documentation/pictory/)  
+- 64-bit operating system
+
+👉 If you’re not using a 64-bit OS, follow this guide:  
+[Download and check a compatible image](https://revolutionpi.com/documentation/revpi-images/#download-and-check-image)
+
+---
+
+## 📥 Download
+
+After connecting to your RevPi via SSH or using the Copilote interface:
 
 ```bash
+git clone https://github.com/XavSPM/RevpiEpics.git
+```
+
+---
+
+## 💾 Installation
+
+Because Debian and its derivatives (like Raspberry Pi OS) protect the system environment from direct `pip` installations,  
+you **cannot** simply run:
+
+```bash
+cd RevpiEpics
 pip install .
 ```
 
-## Usage
+### ✅ Recommended: use a virtual environment
 
-### Example
+This is the cleanest and safest approach because it won’t affect system-wide packages:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+cd RevpiEpics
+pip install .
+```
+
+Once installed, always run your scripts **with the virtual environment activated** (`source venv/bin/activate`).
+
+### ⚠️ Alternative (not recommended): install system-wide
+
+If you really want to install at the system level:
+
+```bash
+cd RevpiEpics
+pip install . --break-system-packages
+```
+
+⚠️ Warning: This can cause conflicts with packages installed via `apt`.
+
+---
+
+### Install cothread (if needed)
+
+Depending on whether you’re using `cothread` or `asyncio` in your program, you might need to install the `cothread` library.  
+For more details, see:  
+[What are the differences between asyncio and using the cothread Library?](https://diamondlightsource.github.io/pythonSoftIOC/master/explanations/asyncio-cothread-differences.html)
+
+```bash
+pip install cothread
+```
+
+---
+
+## 🚀 Usage
+
+### Minimal example
 
 ```python
 from softioc import builder, softioc
@@ -30,53 +95,64 @@ from revpiepics import RevPiEpics
 builder.SetDeviceName("TEST")
 a = RevPiEpics(debug=True, cycletime=200)  # debug and cycletime are optional
 
-ai1 = a.builder("OutputStatus_2_i06")  # The PV name will match PiCtory
-ai2 = a.builder("OutputStatus_1_i06", "Out1Status")  # The PV name will be TEST:Out1Status
-ai3 = a.builder("InputStatus_1_i06")  # Automatic input type detection
-ai3 = a.builder("InputValue_1_i06")
-ao1 = a.builder(io_name="OutputValue_2_i06", pv_name="Out2", DESC="Out 1", EGU="mV")  # Configure like with softioc
-ao2 = a.builder(io_name="OutputValue_1_i06", pv_name="Out1", DRVL="8000", DRVH=19000)  # Change limits
+ai1 = a.builder("OutputStatus_2_i06")  # PV name = TEST:OutputStatus_2_i06
+ai2 = a.builder("OutputStatus_1_i06", "Out1Status")  # PV name = TEST:Out1Status
+ai3 = a.builder("InputStatus_1_i06")  # Automatic type detection
+ai4 = a.builder("InputValue_1_i06")
+ao1 = a.builder(io_name="OutputValue_2_i06", pv_name="Out2", DESC="Out 1", EGU="mV")  # Advanced config
+ao2 = a.builder(io_name="OutputValue_1_i06", pv_name="Out1", DRVL="8000", DRVH=19000)  # Set limits
 
 # Start the IOC
 builder.LoadDatabase()
 softioc.iocInit()
-a.start()  # Start the IO loop
 
-# Keep the IOC running in a shell
-softioc.non_interactive_ioc() # or softioc.interactive_ioc(globals())
+# Start IO loop
+a.start() 
+
+# Keep the IOC running
+softioc.non_interactive_ioc()  # or softioc.interactive_ioc(globals())
 ```
 
-## Supported Modules
+---
+
+## 📦 Supported Modules
 
 - AIO (Analog Input/Output)
 
-Other modules may be supported in the future.
+➡️ Other modules may be supported in the future.
 
-## Dependencies
+---
 
-- pythonSoftIoc
-- revpimodio2
+## 📚 Dependencies
 
-## Development
+- [pythonSoftIoc](https://pypi.org/project/pythonSoftIOC/)  
+- [revpimodio2](https://pypi.org/project/revpimodio2/)
 
-This library is still under development.  
-Any help or contributions are welcome!
+---
 
-## Third-party Licenses
+## 🛠 Development
 
-This project uses the following third-party components:
+This library is under active development.  
+Contributions and feedback are very welcome! 🚀
+
+---
+
+## 📄 Third-party Licenses
 
 - **pythonSoftIOC**  
   License: Apache License 2.0  
   See the `LICENSE_pythonSoftIOC` file for details.
 
 - **revpimodio2**  
-  License: GNU Lesser General Public License (LGPL) v2.1  
+  License: GNU LGPL v2.1  
   See the `LICENSE_revpimodio2` file for details.
 
-## Project License
+---
 
-This project is licensed under the MIT License.
+## ⚖️ Project License
+
+MIT License  
+See the `LICENSE` file for details.
 
 ```
 MIT License
@@ -101,5 +177,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
-See the `LICENSE` file for details.
