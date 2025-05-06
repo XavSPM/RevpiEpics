@@ -1,0 +1,5 @@
+This project includes the following third-party libraries:
+- pythonSoftIOC (Apache License 2.0)
+- revpimodio2 (GNU Lesser General Public License v2.1)
+
+See LICENSE_pythonSoftIOC and LICENSE_revpimodio2 for details.
