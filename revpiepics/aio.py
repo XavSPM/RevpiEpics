@@ -7,9 +7,10 @@ registers it inside the shared :data:`builder_registry` so that
 """
 from softioc import builder
 
-from .revpiepics import builder_registry, RevPiEpics, logger
+from .revpiepics import RevPiEpics, logger
 from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
+from softioc.pythonSoftIoc import PythonDevice
 
 # ---------------------------------------------------------------------------
 # Offset maps — see the Revolution‑Pi documentation for the exact meaning of
@@ -29,7 +30,7 @@ def builder_aio(
     DRVL=None,
     DRVH=None,
     **fields,
-):
+) -> (PythonDevice | None):
     """Create an EPICS record bound to *io_point*.
 
     The record type depends on the IO *offset* inside the AIO module:
@@ -90,8 +91,8 @@ def builder_aio(
         record = builder.mbbIn(
             pv_name,
             "OK",
-            ("T < -200°C / short circuit", "MAJOR"),
-            ("T > 850°C / not connected", "MAJOR"),
+            ("T<-200°C / short circuit", "MAJOR"),
+            ("T>850°C / not connected", "MAJOR"),
             initial_value=RevPiEpics._status_convert(io_point.value),
             **fields,
         )
@@ -118,23 +119,24 @@ def builder_aio(
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
 
     elif offset in ANALOG_OUTPUT_OFFSETS:
-        
+
         out_range = None
         out_divisor = None
         out_multiplier = None
         out_offset = None
+        revpi = RevPiEpics.get_revpi()
 
         if offset == 20:
-            out_range = RevPiEpics._revpi.io[parent_offset + 69][0].value
-            out_multiplier = RevPiEpics._revpi.io[parent_offset + 73][0].value
-            out_divisor = RevPiEpics._revpi.io[parent_offset + 75][0].value
-            out_offset = RevPiEpics._revpi.io[parent_offset + 77][0].value
+            out_range = revpi.io[parent_offset + 69][0].value
+            out_multiplier = revpi.io[parent_offset + 73][0].value
+            out_divisor = revpi.io[parent_offset + 75][0].value
+            out_offset = revpi.io[parent_offset + 77][0].value
 
         if offset == 22:
-            out_range = RevPiEpics._revpi.io[parent_offset + 79][0].value
-            out_multiplier = RevPiEpics._revpi.io[parent_offset + 83][0].value
-            out_divisor = RevPiEpics._revpi.io[parent_offset + 85][0].value
-            out_offset = RevPiEpics._revpi.io[parent_offset + 87][0].value
+            out_range = revpi.io[parent_offset + 79][0].value
+            out_multiplier = revpi.io[parent_offset + 83][0].value
+            out_divisor = revpi.io[parent_offset + 85][0].value
+            out_offset = revpi.io[parent_offset + 87][0].value
 
         if out_range > 0:
             range_min, range_max = _output_range(out_range)
@@ -162,7 +164,7 @@ def builder_aio(
                 on_update_name=RevPiEpics._record_write,
                 DRVH=value_max,
                 DRVL=value_min,
-                **fields,
+                **fields
             )
         else:
             logger.error("Output %s is not enabled", io_point.name)
@@ -202,9 +204,9 @@ def _output_range(range: int):
             return (4000,20000) # 4mA - 20mA
         case AIO.OUT_RANGE_0_20MA:
             return (0,20000) # 0mA - 20mA
-        case AIO.OUT_RANGE_0_20MA:
+        case AIO.OUT_RANGE_0_24MA:
             return (0,24000) # 0mA - 24mA
         case _:
             return (None,None)
 
-builder_registry[ProductType.AIO] = builder_aio
+RevPiEpics._register_builder(ProductType.AIO, builder_aio)
