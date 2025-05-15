@@ -1,159 +1,220 @@
-import revpimodio2
-from revpimodio2.pictory import ProductType
 import atexit
 import logging
-from typing import Optional, Dict, Tuple
+from typing import Dict, Callable
 
-# Global registry to associate product types with their builder functions
-builder_registry = {}
+import revpimodio2
+from revpimodio2.io import IntIO
+from revpimodio2.pictory import ProductType
+from softioc.pythonSoftIoc import PythonDevice
+
+# Registry that maps a ProductType to the builder function able to
+# generate the appropriate EPICS record for that hardware.
+builder_registry: Dict[ProductType, Callable] = {}
 
 logger = logging.getLogger(__name__)
 
+
 class RevPiEpics:
+    
+    """Bridge between a Revolution-Pi and EPICS.
+
+    The class exposes RevPi IO points as EPICS process variables (PVs),
+    keeps both sides synchronised.
+
+    Attributes
+    ----------
+    __revpi : RevPiModIO | None
+        The underlying *revpimodio2* connection.
+    __map_io_to_pv : dict[str, str]
+        Mapping *RevPi IO name → EPICS PV name*.
+    __map_pv_to_io : dict[str, str]
+        Mapping *EPICS PV name → RevPi IO name*.
+    __liste_pv : dict[str, PythonDevice]
+        Cache of all EPICS records.
+    __liste_io : dict[str, IntIO]
+        Cache of all IO objects.
     """
-    Main class to interface Revolution Pi with EPICS.
-    It manages IOs, creates PVs, and synchronizes changes.
 
-    Attributes:
-        _revpi (RevPiModIO): RevPiModIO instance to access IOs.
-        _liste_pv (dict[str, tuple]): Maps IO names to (record, io_point) pairs.
-        _debug (bool): Enables debug logging.
+    __map_io_to_pv: Dict[str, str] = {}
+    __map_pv_to_io: Dict[str, str] = {}
+    __liste_pv: Dict[str, PythonDevice] = {}
+    __liste_io: Dict[str, IntIO] = {}
+    __revpi: revpimodio2.RevPiModIO | None = None
 
-    Public Methods:
-        builder(io_name, pv_name, DRVL=None, DRVH=None, **fields): Creates an EPICS PV for a given IO.
-        start(): Starts the main RevPi event loop.
-        cleanup(): Resets analog outputs to default values.
+    # ------------------------------------------------------------------ #
+    # Initialisation / shutdown                                          #
+    # ------------------------------------------------------------------ #
 
-    Internal Methods:
-        _io_change(record, iovalue, ioname): Handles IO → EPICS updates.
-        _record_write(value, io_point, pv_name): Handles EPICS → IO writes.
-        _status_convert(n): Converts an integer to its bit length (used for status decoding).
-    """
+    @classmethod
+    def initialize(cls, *, cycletime: int = 200, debug: bool = False) -> None:
+        """Open the connection to the Revolution-Pi.
 
-    def __init__(self, debug: bool = False, cycletime: int = 200) -> None:
+        Parameters
+        ----------
+        cycletime :
+            Refresh cycle time in **milliseconds** (default 200 ms).
+        debug :
+            If *True* the logger is put in *DEBUG* mode.
         """
-        Initializes the RevPiEpics instance.
+        cls.__revpi = revpimodio2.RevPiModIO(autorefresh=True, debug=debug)
+        cls.__revpi.cycletime = cycletime
 
-        Args:
-            debug (bool): Enable debug messages.
-            cycletime (int): Refresh cycle time in milliseconds.
-        """
-        self._revpi = revpimodio2.RevPiModIO(autorefresh=True, debug = debug)
-        self._revpi.cycletime = cycletime
-        self._liste_pv: Dict[str, Tuple] = {}  # Stores registered PVs: {io_name: (record, io_point)}
+        # Make sure outputs are reset even if the program crashes
+        atexit.register(cls.cleanup)
 
-        # Ensure cleanup runs on program exit
-        atexit.register(self.cleanup)
-
-       # Configure the global logging system only once
+        # Configure the global logging system only once
         if debug:
             logging.basicConfig(
                 level=logging.DEBUG,
                 format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-                )
+            )
         else:
             logging.basicConfig(
                 level=logging.INFO,
                 format="[%(levelname)s]: %(message)s",
-                )
+            )
 
-        if self._revpi._debug:
-            logger.info("Debug mode enabled.")
+    # ------------------------------------------------------------------ #
+    # PV / IO binding                                                    #
+    # ------------------------------------------------------------------ #
 
-    def builder(self, io_name: str, pv_name: str=None, DRVL=None, DRVH=None, **fields):
+    @classmethod
+    def builder(
+        cls,
+        io_name: str,
+        pv_name: str | None = None,
+        DRVL: int | float | None = None,
+        DRVH: int | float | None = None,
+        **fields,
+    ) -> PythonDevice | None:
+        """Create an EPICS record bound to the requested RevPi IO.
+
+        The actual record type (ai/ao/bi/bo/etc.) is delegated to the
+        *builder function* registered for the IO's *ProductType*.
+
+        Parameters
+        ----------
+        io_name :
+            Name of the IO as exported by *revpimodio2*.
+        pv_name :
+            Desired EPICS PV name. When *None* ``io_name`` is reused.
+        DRVL / DRVH :
+            Display limits passed to the underlying EPICS record.
+        **fields :
+            Arbitrary extra keyword arguments propagated to the builder.
+
+        Returns
+        -------
+        PythonDevice | None
+            The created record or *None* when something went wrong.
         """
-        Creates an EPICS PV record linked to a Revolution Pi IO.
-
-        Args:
-            io_name (str): Name of the IO in RevPiModIO.
-            pv_name (str) (optional): Name of the EPICS process variable (PV).
-            DRVL (optional): Lower display limit.
-            DRVH (optional): Upper display limit.
-            **fields: Additional EPICS fields.
-
-        Returns:
-            record object or None if no matching builder.
-        """
-        if not hasattr(self._revpi.io, io_name):
-            logger.error(f"IO name '{io_name}' not found in RevPi IOs.")
+        if cls.__revpi is None:
+            logger.error("RevPiEpics has not been initialised; call 'initialize()' first.")
             return None
-        io_point = getattr(self._revpi.io, io_name)
-        product_type = io_point._parentdevice._producttype
 
+        if not hasattr(cls.__revpi.io, io_name):
+            logger.error("IO name %s not found in RevPi IOs.", io_name)
+            return None
+
+        if io_name in cls.__liste_io:
+            logger.error("The IO '%s' is already bound to a PV.", io_name)
+            return None
+
+        if pv_name is not None and pv_name in cls.__liste_pv:
+            logger.error("The PV name '%s' is already in use.", pv_name)
+            return None
+
+        io_point: IntIO = getattr(cls.__revpi.io, io_name)
+        product_type: ProductType = io_point._parentdevice._producttype
         builder_func = builder_registry.get(product_type)
-        if not builder_func:
-            logger.warning(f"No builder found for {product_type}")
+
+        if builder_func is None:
+            logger.warning("No builder registered for product type %s.", product_type)
             return None
-        
-        if pv_name == None:
+
+        if pv_name is None:
             pv_name = io_name
-        
-        record = builder_func(self, io_point, pv_name, DRVL, DRVH, **fields)
-        if record:
-            self._liste_pv[io_point.name] = (record, io_point)
+
+        record = builder_func(
+            cls=cls,
+            io_point=io_point,
+            pv_name=pv_name,
+            DRVL=DRVL,
+            DRVH=DRVH,
+            **fields,
+        )
+
+        if record is not None:
+            cls.__map_io_to_pv[io_name] = pv_name
+            cls.__map_pv_to_io[pv_name] = io_name
+            cls.__liste_io[io_name] = io_point
+            cls.__liste_pv[pv_name] = record
+
         return record
 
-    def _io_change(self, record, iovalue, ioname: str):
-        """
-        Updates an EPICS record when its linked IO value changes.
+    # ------------------------------------------------------------------ #
+    # Event handlers                                                     #
+    # ------------------------------------------------------------------ #
 
-        Args:
-            record: EPICS record object.
-            iovalue: New IO value (int, float, or bool depending on IO type).
-            ioname (str): Name of the IO point.
-        """
-        record.set(iovalue)
-        if self._revpi._debug:
-            logging.debug(f"Change detected on {ioname} → {record.name} = {iovalue}")
+    @classmethod
+    def _io_value_change(cls, event) -> None:
+        """Callback executed by *revpimodio2* when an IO value changes."""
+        pv_name = cls.__map_io_to_pv[event.ioname]
+        record = cls.__liste_pv[pv_name]
+        record.set(event.iovalue)
+        logger.debug("IO %s → PV %s = %s", event.ioname, pv_name, event.iovalue)
 
-    def _record_write(self, value, io_point, pv_name: str):
-        """
-        Writes a value from an EPICS record back to the physical IO.
+    @classmethod
+    def _io_status_change(cls, event) -> None:
+        """Callback executed when the IO status word changes."""
+        pv_name = cls.__map_io_to_pv[event.ioname]
+        record = cls.__liste_pv[pv_name]
+        record.set(cls._status_convert(event.iovalue))
 
-        Args:
-            value: Value to write (int or float).
-            io_point: The RevPiModIO IO point object.
-            pv_name (str): The EPICS PV name.
-        """
-        try:
-            io_point.value = int(value)
-            if self._revpi._debug:
-                logger.debug(f"Write to {pv_name} → {io_point.name} = {int(value)}")
-        except Exception as e:
-            logger.error(f"Failed to write to {pv_name}: {e}")
-    
     @staticmethod
-    def _status_convert(n: int) -> int:
-        """
-        Converts an integer to its bit length (useful for status decoding).
+    def _status_convert(value: int) -> int:
+        """Return the number of significant bits in *value*.
 
-        Args:
-            n (int): Input integer.
+        The result is used as a crude error-/status-code mapping.
+        """
+        return int(value).bit_length()
 
-        Returns:
-            int: Number of significant bits.
-        """
-        return int(n).bit_length()
+    # ------------------------------------------------------------------ #
+    # Write record                                                       #
+    # ------------------------------------------------------------------ #
 
-    def start(self):
-        """
-        Starts the RevPiModIO main loop (non-blocking).
-        Automatically refreshes all IOs and listens for changes.
-        """
-        if self._revpi._debug:
-            logger.debug("Starting RevPi main")
-        self._revpi.autorefresh_all()
-        self._revpi.mainloop(blocking=False)
+    @classmethod
+    def _record_write(cls, pv_name: str, value: float) -> None:
+        """EPICS → hardware write handler."""
+        try:
+            io_name = cls.__map_pv_to_io[pv_name]
+            io_point = cls.__liste_io[io_name]
+            io_point.value = int(value)
+            logger.debug("PV %s → IO %s = %d", pv_name, io_name, int(value))
+        except Exception as exc:
+            logger.error("Failed to write to %s: %s", pv_name, exc)
 
-    def cleanup(self):
-        """
-        Resets all registered analog output IOs to their default values.
-        Called automatically on program exit.
-        """
-        if self._liste_pv:
-            for key, data in self._liste_pv.items():
-                record, io = data
-                if io.type == 301:  # Type 301 → analog output
-                    io.value = io.get_intdefaultvalue()
-        if self._revpi._debug:
-            logger.debug("Cleanup done.")
+    # ------------------------------------------------------------------ #
+    # Runtime                                                            #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def start(cls) -> None:
+        """Start the *revpimodio2* main loop (non-blocking)."""
+        if cls.__revpi is None:
+            raise RuntimeError("RevPiEpics has not been initialised.")
+        cls.__revpi.autorefresh_all()
+        cls.__revpi.mainloop(blocking=False)
+
+    # ------------------------------------------------------------------ #
+    # Exit                                                               #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def cleanup(cls) -> None:
+        """Reset every registered analogue output to its factory default."""
+        for io_point in cls.__liste_io.values():
+            # Type 301 corresponds to output in RevPi
+            if getattr(io_point, "type", None) == 301:
+                io_point.value = io_point.get_intdefaultvalue()
+        logger.debug("Cleanup complete.")
