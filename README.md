@@ -93,7 +93,7 @@ from softioc import builder, softioc
 from revpiepics import RevPiEpics
 
 builder.SetDeviceName("TEST")
-a = RevPiEpics(debug=True, cycletime=200)  # debug and cycletime are optional
+RevPiEpics.initialize(debug=True, cycletime=200)  # debug and cycletime are optional
 
 ai1 = a.builder("OutputStatus_2_i06")  # PV name = TEST:OutputStatus_2_i06
 ai2 = a.builder("OutputStatus_1_i06", "Out1Status")  # PV name = TEST:Out1Status
@@ -107,7 +107,7 @@ builder.LoadDatabase()
 softioc.iocInit()
 
 # Start IO loop
-a.start() 
+RevPiEpics.start() 
 
 # Keep the IOC running
 softioc.non_interactive_ioc()  # or softioc.interactive_ioc(globals())

@@ -1,20 +1,22 @@
 """EPICS builder helper for Revolution-Pi *AIO* modules.
 
-This module exposes a *builder* callable able to translate the raw IO
-exported by *revpimodio2* into the proper EPICS record (ai/ao/mbbi…) and
-registers it inside the shared :data:`builder_registry` so that
-:pymeth:`RevPiEpics.builder` can discover it automatically.
+This module provides a *builder* function capable of translating raw IOs
+exposed by *revpimodio2* into appropriate EPICS records (ai, ao, mbbi, etc.),
+and registers it in the shared :data:`builder_registry` so that
+:pymeth:`RevPiEpics.builder` can automatically discover and use it.
 """
-from softioc import builder
 
+from softioc import builder
 from .revpiepics import RevPiEpics, logger
 from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
-from softioc.pythonSoftIoc import PythonDevice
+from softioc.pythonSoftIoc import RecordWrapper
+
+from typing import cast, Tuple
 
 # ---------------------------------------------------------------------------
-# Offset maps — see the Revolution‑Pi documentation for the exact meaning of
-# each address inside an AIO module.
+# Offset definitions — See the Revolution Pi documentation for the meaning
+# of each address in an AIO module.
 # ---------------------------------------------------------------------------
 ANALOG_INPUT_OFFSETS = [0, 2, 4, 6]
 ANALOG_INPUT_STATUS_OFFSETS = [8, 9, 10, 11]
@@ -30,40 +32,41 @@ def builder_aio(
     DRVL=None,
     DRVH=None,
     **fields,
-) -> (PythonDevice | None):
-    """Create an EPICS record bound to *io_point*.
+) -> (RecordWrapper | None):
+    """
+    Create an EPICS record bound to *io_point*.
 
-    The record type depends on the IO *offset* inside the AIO module:
+    The record type is determined by the IO *offset* inside the AIO module:
 
-    * **0/2/4/6** → analogue *input* (ai)
-    * **8/9/10/11** → status for the analogue inputs (mbbi)
+    * **0/2/4/6** → analog *input* (ai)
+    * **8/9/10/11** → input *status* (mbbi)
     * **12/14** → temperature *input* (ai)
-    * **16/17** → status for the temperature channels (mbbi)
-    * **18/19** → status for an analogue *output* (mbbi)
-    * **20/22** → analogue *output*  (ao)
+    * **16/17** → temperature *status* (mbbi)
+    * **18/19** → output *status* (mbbi)
+    * **20/22** → analog *output* (ao)
 
     Parameters
     ----------
     io_point : IntIO
-        Handle returned by *revpimodio2*.
+        The IO object returned by *revpimodio2*.
     pv_name : str
-        Name of the EPICS PV to create.
+        The EPICS process variable name to create.
     DRVL / DRVH : int | float | str | None
-        Display limits forwarded to *builder.aOut()* when applicable.
+        Display limits forwarded to *builder.aOut()*, if applicable.
     **fields : dict
-        Extra keyword arguments passed verbatim to *softioc.builder*.
+        Additional keyword arguments passed directly to *softioc.builder*.
 
     Returns
     -------
-    PythonDevice | None
-        The created record or *None* on error.
+    RecordWrapper | None
+        The created record, or *None* if an error occurred.
     """
     parent_offset = io_point._parentdevice._offset
     offset = io_point.address - parent_offset
     record = None
 
     # ------------------------------------------------------------------
-    # Analogue inputs                                                   
+    # Analog inputs                                                    
     # ------------------------------------------------------------------
     if offset in ANALOG_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
@@ -81,7 +84,7 @@ def builder_aio(
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
 
     # ------------------------------------------------------------------
-    # Temperature inputs                                                
+    # Temperature inputs                                               
     # ------------------------------------------------------------------
     elif offset in TEMPERATURE_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
@@ -99,7 +102,7 @@ def builder_aio(
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
 
     # ------------------------------------------------------------------
-    # Analogue outputs                                                  
+    # Analog outputs                                                   
     # ------------------------------------------------------------------
     elif offset in ANALOG_OUTPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -110,103 +113,131 @@ def builder_aio(
             ("Internal error", "MAJOR"),
             ("Range error", "MAJOR"),
             ("Internal purposes", "MAJOR"),
-            ("Supply voltage <10.2V", "MAJOR"),
-            ("Supply voltage >28.8V", "MAJOR"),
-            ("Timeout when connecting", "MAJOR"),
+            ("Supply voltage < 10.2V", "MAJOR"),
+            ("Supply voltage > 28.8V", "MAJOR"),
+            ("Connection timeout", "MAJOR"),
             initial_value=RevPiEpics._status_convert(io_point.value),
             **fields,
         )
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
 
     elif offset in ANALOG_OUTPUT_OFFSETS:
-
-        out_range = None
-        out_divisor = None
-        out_multiplier = None
-        out_offset = None
         revpi = RevPiEpics.get_revpi()
 
-        if offset == 20:
-            out_range = revpi.io[parent_offset + 69][0].value
-            out_multiplier = revpi.io[parent_offset + 73][0].value
-            out_divisor = revpi.io[parent_offset + 75][0].value
-            out_offset = revpi.io[parent_offset + 77][0].value
-
-        if offset == 22:
-            out_range = revpi.io[parent_offset + 79][0].value
-            out_multiplier = revpi.io[parent_offset + 83][0].value
-            out_divisor = revpi.io[parent_offset + 85][0].value
-            out_offset = revpi.io[parent_offset + 87][0].value
-
-        if out_range > 0:
-            range_min, range_max = _output_range(out_range)
-
-            # Calculate default limits when none supplied by the caller
-            if DRVL is not None:
-                try:
-                    value_min = float(DRVL)
-                except (TypeError, ValueError):
-                    value_min = ((range_min * out_multiplier) / out_divisor) + out_offset
-            else:
-                value_min = ((range_min * out_multiplier) / out_divisor) + out_offset
-
-            if DRVH is not None:
-                try:
-                    value_max = float(DRVH)
-                except (TypeError, ValueError):
-                    value_max = ((range_max * out_multiplier) / out_divisor) + out_offset
-            else:
-                value_max = ((range_max * out_multiplier) / out_divisor) + out_offset
-
-            record = builder.aOut(
-                pv_name,
-                initial_value=io_point.value,
-                on_update_name=RevPiEpics._record_write,
-                DRVH=value_max,
-                DRVL=value_min,
-                **fields
-            )
+        if not revpi or not revpi.io:
+            logger.error("Cannot access RevPi IOs for analog output processing.")
         else:
-            logger.error("Output %s is not enabled", io_point.name)
+            out_range, out_multiplier, out_divisor, out_offset = _read_analog_out_params(offset, parent_offset)
 
-    else:
-        logger.error("Unsupported offset: %d", offset)
+            if out_range is not None and out_range > 0:
+                range_min, range_max = _output_range(out_range)
+
+                if (
+                    isinstance(range_min, int) and
+                    isinstance(range_max, int) and
+                    isinstance(out_multiplier, int) and
+                    isinstance(out_divisor, int) and
+                    out_divisor != 0 and
+                    isinstance(out_offset, int)
+                ):
+                    try:
+                        value_min = float(DRVL) if DRVL is not None else ((range_min * out_multiplier) / out_divisor) + out_offset
+                    except (TypeError, ValueError):
+                        value_min = ((range_min * out_multiplier) / out_divisor) + out_offset
+
+                    try:
+                        value_max = float(DRVH) if DRVH is not None else ((range_max * out_multiplier) / out_divisor) + out_offset
+                    except (TypeError, ValueError):
+                        value_max = ((range_max * out_multiplier) / out_divisor) + out_offset
+
+                    record = builder.aOut(
+                        pv_name,
+                        initial_value=io_point.value,
+                        on_update_name=RevPiEpics._record_write,
+                        DRVH=value_max,
+                        DRVL=value_min,
+                        **fields
+                    )
+                else:
+                    logger.error("Incomplete conversion parameters for analog output '%s'", io_point.name)
+            else:
+                logger.error("Analog output '%s' is disabled or has invalid parameters", io_point.name)
 
     return record
 
-def _output_range(range: int):    
-    """Translate the *AIO* range code into engineering units.
 
-    Returns a *(min, max)* tuple expressed either in **millivolts** or
-    **micro-amps** depending on the selected range.
+def _output_range(range: int) -> Tuple[int | None, int | None]:
     """
+    Converts an AIO range code into its corresponding engineering unit limits.
 
-    match range: 
-        case AIO.OUT_RANGE_OFF : 
-            return (None,None) # OFF
+    Returns
+    -------
+    Tuple[int | None, int | None]
+        A (min, max) tuple in either millivolts or microamps depending on the range.
+    """
+    match range:
+        case AIO.OUT_RANGE_OFF:
+            return (None, None)
         case AIO.OUT_RANGE_0_5V:
-            return (0,5000) # 0V - +5 V
+            return (0, 5000)
         case AIO.OUT_RANGE_0_10V:
-            return (0,10000) # 0V - +10 V
+            return (0, 10000)
         case AIO.OUT_RANGE_N5_5V:
-            return (-5000,5000) # -5V - +5V
+            return (-5000, 5000)
         case AIO.OUT_RANGE_N10_10V:
-            return (-10000,10000) # -10V - +10V
+            return (-10000, 10000)
         case AIO.OUT_RANGE_0_5P5V:
-            return (0,5500) # 0V - 5,5V
+            return (0, 5500)
         case AIO.OUT_RANGE_0_11V:
-            return (0,11000) # 0V - 11V
+            return (0, 11000)
         case AIO.OUT_RANGE_N5P5_5P5V:
-            return (-5500,5500) # -5,5 V - 5,5V
+            return (-5500, 5500)
         case AIO.OUT_RANGE_N11_11V:
-            return (-11000,11000) # -11V - 11V
+            return (-11000, 11000)
         case AIO.OUT_RANGE_4_20MA:
-            return (4000,20000) # 4mA - 20mA
+            return (4000, 20000)
         case AIO.OUT_RANGE_0_20MA:
-            return (0,20000) # 0mA - 20mA
+            return (0, 20000)
         case AIO.OUT_RANGE_0_24MA:
-            return (0,24000) # 0mA - 24mA
+            return (0, 24000)
         case _:
-            return (None,None)
+            return (None, None)
 
+
+def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None, int | None, int | None, int | None]:
+    """
+    Reads range and scaling parameters for a given analog output channel.
+
+    Parameters
+    ----------
+    offset : int
+        The output offset within the module (e.g. 20 or 22).
+    parent_offset : int
+        The base offset of the AIO module.
+
+    Returns
+    -------
+    Tuple[int | None, int | None, int | None, int | None]
+        A tuple of (range, multiplier, divisor, offset) parameters.
+    """
+    offset_map = {
+        20: {'range': 69, 'multiplier': 73, 'divisor': 75, 'offset': 77},
+        22: {'range': 79, 'multiplier': 83, 'divisor': 85, 'offset': 87},
+    }
+
+    map_entry = offset_map.get(offset)
+    if not map_entry:
+        logger.error("Unknown analog output offset: %s", offset)
+        return (None, None, None, None)
+
+    get_val = RevPiEpics.get_io_offset_value
+    return (
+        get_val(parent_offset + map_entry['range']),
+        get_val(parent_offset + map_entry['multiplier']),
+        get_val(parent_offset + map_entry['divisor']),
+        get_val(parent_offset + map_entry['offset']),
+    )
+
+
+# Register the builder for AIO modules
 RevPiEpics._register_builder(ProductType.AIO, builder_aio)

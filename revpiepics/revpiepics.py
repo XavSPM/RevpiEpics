@@ -1,12 +1,11 @@
 import atexit
 import logging
 import functools
-from typing import Dict, Callable, Optional
+from typing import Dict, Callable, Optional, cast
 
 import revpimodio2
 from revpimodio2.io import IntIO
-from revpimodio2.pictory import ProductType
-from softioc.pythonSoftIoc import PythonDevice
+from softioc.pythonSoftIoc import RecordWrapper
 
 # Registers builder functions depending on the module type
 
@@ -22,10 +21,10 @@ class RevPiEpics:
 
     __map_io_to_pv: Dict[str, str] = {}
     __map_pv_to_io: Dict[str, str] = {}
-    __liste_pv: Dict[str, PythonDevice] = {}
+    __liste_pv: Dict[str, RecordWrapper] = {}
     __liste_io: Dict[str, IntIO] = {}
-    __revpi: revpimodio2.RevPiModIO = None
-    __builder_registry: Dict[ProductType, Callable] = {}
+    __revpi: revpimodio2.RevPiModIO | None = None
+    __builder_registry: Dict[int, Callable] = {}
 
     @staticmethod
     def _requires_initialization(func):
@@ -74,7 +73,7 @@ class RevPiEpics:
         DRVL: Optional[float] = None,
         DRVH: Optional[float] = None,
         **fields,
-    ) -> (PythonDevice | None):
+    ) -> (RecordWrapper | None):
         """
         Creates an EPICS record (PV) and binds it to a RevPi IO.
 
@@ -96,6 +95,10 @@ class RevPiEpics:
         PythonDevice
             The created EPICS record, or None if an error occurred.
         """
+        if cls.__revpi is None:
+            logger.error("RevPi instance is not initialized. Call 'initialize()' before using 'builder()'.")
+            return None
+
         if not hasattr(cls.__revpi.io, io_name):
             logger.error("IO name %s not found in RevPi IOs.", io_name)
             return None
@@ -140,10 +143,15 @@ class RevPiEpics:
             Event containing the IO name and its new value.
         """
         pv_name = cls.__map_io_to_pv.get(event.ioname)
-        record = cls.__liste_pv.get(pv_name)
-        if record:
-            record.set(event.iovalue)
-            logger.debug("IO %s → PV %s = %s", event.ioname, pv_name, event.iovalue)
+        if pv_name is not None:
+            record = cls.__liste_pv.get(pv_name)
+            if record:
+                record.set(event.iovalue)
+                logger.debug("IO %s → PV %s = %s", event.ioname, pv_name, event.iovalue)
+            else:
+                logger.error("PV '%s' mapped from IO '%s' is not found in internal registry.", pv_name, event.ioname)
+        else:
+            logger.error("No PV is mapped to IO '%s' in '_io_value_change'.", event.ioname)
 
     @classmethod
     def _io_status_change(cls, event) -> None:
@@ -156,9 +164,14 @@ class RevPiEpics:
             Event containing the IO status.
         """
         pv_name = cls.__map_io_to_pv.get(event.ioname)
-        record = cls.__liste_pv.get(pv_name)
-        if record:
-            record.set(cls._status_convert(event.iovalue))
+        if pv_name is not None:
+            record = cls.__liste_pv.get(pv_name)
+            if record:
+                record.set(cls._status_convert(event.iovalue))
+            else:
+                logger.error("PV '%s' mapped from IO '%s' is not found in internal registry (status).", pv_name, event.ioname)
+        else:
+            logger.error("No PV is mapped to IO '%s' in '_io_status_change'.", event.ioname)
 
     @staticmethod
     def _status_convert(value: int) -> int:
@@ -211,7 +224,10 @@ class RevPiEpics:
         RevPiModIO | None
             The RevPi communication object or None if not Initialized
         """
-        return cls.__revpi
+        if isinstance(cls.__revpi, revpimodio2.RevPiModIO):
+            return cls.__revpi
+        else:
+            return None
 
     @classmethod
     def get_io_name(cls, pv_name: str) -> (str | None):
@@ -265,7 +281,7 @@ class RevPiEpics:
         return cls.__map_io_to_pv.get(io_name)
 
     @classmethod
-    def get_pv_record(cls, pv_name: str) -> (PythonDevice | None):
+    def get_pv_record(cls, pv_name: str) -> (RecordWrapper | None):
         """
         Returns the PythonDevice object corresponding to a given PV.
 
@@ -280,6 +296,19 @@ class RevPiEpics:
             The corresponding PythonDevice object or None if there is no correspondence
         """
         return cls.__liste_pv.get(pv_name)
+    
+    @classmethod
+    def get_io_offset_value(cls, offset: int) -> (int | None):
+        """
+        """
+        if cls.__revpi and cls.__revpi.io:
+            io = cast(list, cls.__revpi.io[offset])
+            io_point = cast(IntIO,io[0])
+            value = io_point.value
+            return value
+        else:
+            logger.error("Unable to access RevPi IOs when reading offset value %d.", offset)
+            return None
 
     @classmethod
     @_requires_initialization
@@ -287,8 +316,11 @@ class RevPiEpics:
         """
         Starts the main revpimodio2 loop (non-blocking).
         """
-        cls.__revpi.autorefresh_all()
-        cls.__revpi.mainloop(blocking=False)
+        if cls.__revpi is not None:
+            cls.__revpi.autorefresh_all()
+            cls.__revpi.mainloop(blocking=False)
+        else:
+            logger.error("Cannot start RevPi loop: RevPi instance is not initialized.")
 
     @classmethod
     def cleanup(cls) -> None:
@@ -302,7 +334,7 @@ class RevPiEpics:
         logger.debug("Cleanup complete.")
     
     @classmethod
-    def _register_builder(cls, product_type: ProductType, builder_func: Callable) -> None:
+    def _register_builder(cls, product_type: int, builder_func: Callable) -> None:
         """
         Stores a construction function for a given module type.
 
