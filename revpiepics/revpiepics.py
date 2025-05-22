@@ -389,7 +389,7 @@ class RevPiEpics:
         """
 
         if cycletime:
-            cls.__revpi.cycleloop(func, cycletime=cycletimeblocking=False) # type: ignore
+            cls.__revpi.cycleloop(func, cycletime=cycletime, blocking=False) # type: ignore
         else:
             cls.__revpi.cycleloop(func, blocking=False) # type: ignore
 
