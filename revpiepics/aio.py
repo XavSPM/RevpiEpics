@@ -8,6 +8,7 @@ and registers it in the shared :data:`builder_registry` so that
 
 from softioc import builder
 from .revpiepics import RevPiEpics, logger
+from .utils import status_bit_length
 from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
 from softioc.pythonSoftIoc import RecordWrapper
@@ -78,7 +79,7 @@ def builder_aio(
             "OK",
             ("Below the range", "MAJOR"),
             ("Above the range", "MAJOR"),
-            initial_value=RevPiEpics._status_convert(io_point.value),
+            initial_value=status_bit_length(io_point.value),
             **fields,
         )
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
@@ -96,7 +97,7 @@ def builder_aio(
             "OK",
             ("T<-200°C / short circuit", "MAJOR"),
             ("T>850°C / not connected", "MAJOR"),
-            initial_value=RevPiEpics._status_convert(io_point.value),
+            initial_value=status_bit_length(io_point.value),
             **fields,
         )
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
@@ -116,7 +117,7 @@ def builder_aio(
             ("Supply voltage < 10.2V", "MAJOR"),
             ("Supply voltage > 28.8V", "MAJOR"),
             ("Connection timeout", "MAJOR"),
-            initial_value=RevPiEpics._status_convert(io_point.value),
+            initial_value=status_bit_length(io_point.value),
             **fields,
         )
         io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
