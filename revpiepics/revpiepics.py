@@ -189,7 +189,7 @@ class RevPiEpics:
     def get_io_name(cls, io_name: str) -> (IOMap | None):
         """
         """
-        return cls.__dictmap.get_by_pv_name(io_name)
+        return cls.__dictmap.get_by_io_name(io_name)
 
     @classmethod
     def get_pv_name(cls, pv_name: str) -> (IOMap | None):

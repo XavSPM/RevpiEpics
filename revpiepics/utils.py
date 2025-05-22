@@ -28,7 +28,7 @@ def io_value_change(event) -> None:
         mapping.record.set(event.iovalue)
         logger.debug("IO %s → PV %s = %s", event.ioname, mapping.pv_name, event.iovalue)
     else:
-        logger.error("No PV is mapped to IO '%s' in '_io_value_change'.", event.ioname)
+        logger.error("No PV is mapped to IO '%s' in 'io_value_change'.", event.ioname)
 
 def io_status_change(event) -> None:
     """
