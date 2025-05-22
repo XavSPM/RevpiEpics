@@ -7,6 +7,10 @@ import revpimodio2
 from revpimodio2.io import IntIO
 from softioc.pythonSoftIoc import RecordWrapper
 
+from softioc import softioc, builder
+
+
+
 # Registers builder functions depending on the module type
 
 logger = logging.getLogger(__name__)
@@ -25,6 +29,7 @@ class RevPiEpics:
     __liste_io: Dict[str, IntIO] = {}
     __revpi: revpimodio2.RevPiModIO | None = None
     __builder_registry: Dict[int, Callable] = {}
+    __cleanup = False
 
     @staticmethod
     def _requires_initialization(func):
@@ -56,8 +61,7 @@ class RevPiEpics:
         cls.__revpi = revpimodio2.RevPiModIO(autorefresh=True, debug=debug)
         cls.__revpi.cycletime = cycletime
 
-        if cleanup:
-            atexit.register(cls.cleanup)
+        cls.__cleanup = cleanup
 
         logging.basicConfig(
             level=logging.DEBUG if debug else logging.INFO,
@@ -312,15 +316,55 @@ class RevPiEpics:
 
     @classmethod
     @_requires_initialization
-    def start(cls) -> None:
+    def start(cls, blocking: bool = True) -> None:
         """
-        Starts the main revpimodio2 loop (non-blocking).
+        
         """
         if cls.__revpi is not None:
             cls.__revpi.autorefresh_all()
-            cls.__revpi.mainloop(blocking=False)
+            cls.__revpi.handlesignalend(cls.cleanup)
+            builder.LoadDatabase()
+            softioc.iocInit()
+            if blocking:
+                cls.__revpi.handlesignalend(softioc.safeEpicsExit)
+                cls.__revpi.mainloop()
+            else:
+                cls.__revpi.mainloop(blocking=False)
+                softioc.interactive_ioc(globals())
+                cls.__revpi.exit()
+
         else:
             logger.error("Cannot start RevPi loop: RevPi instance is not initialized.")
+    
+    @classmethod
+    def exit(cls) -> None:
+        """
+        """
+        softioc.safeEpicsExit(0)
+        if cls.__revpi is not None:
+            if cls.__cleanup:
+                cls.cleanup()
+            cls.__revpi.exit()
+    
+    @classmethod
+    @_requires_initialization
+    def cycleloop(cls, func, cycletime: bool=False) -> None:
+        """
+        """
+        if cls.__revpi is not None:
+            if cycletime == False:
+                cls.__revpi.cycleloop(func, blocking=False)
+            else:
+                cls.__revpi.cycleloop(func, cycletime=cycletime, blocking=False)
+        else:
+            logger.error("Cannot start RevPi loop: RevPi instance is not initialized.")
+    
+    @classmethod
+    def SetDeviceName(cls, name: str) -> None:
+        """
+        Set the record prefix
+        """
+        builder.SetDeviceName(name)
 
     @classmethod
     def cleanup(cls) -> None:

@@ -116,7 +116,7 @@ softioc.non_interactive_ioc()  # or softioc.interactive_ioc(globals())
 This example shows how to implement a cyclic processing loop with “revpimodio2”.
 
 ```python
-rom softioc import builder, softioc
+from softioc import builder, softioc
 from revpimodio2 import RevPiModIO
 from revpiepics import RevPiEpics
 
