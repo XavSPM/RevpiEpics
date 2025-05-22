@@ -8,7 +8,7 @@ and registers it in the shared :data:`builder_registry` so that
 
 from softioc import builder
 from .revpiepics import RevPiEpics, logger
-from .utils import status_bit_length
+from .utils import status_bit_length, io_value_change, io_status_change, record_write, get_io_offset_value
 from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
 from softioc.pythonSoftIoc import RecordWrapper
@@ -71,7 +71,7 @@ def builder_aio(
     # ------------------------------------------------------------------
     if offset in ANALOG_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
-        io_point.reg_event(RevPiEpics._io_value_change, as_thread=True)
+        io_point.reg_event(io_value_change, as_thread=True)
 
     elif offset in ANALOG_INPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -82,14 +82,14 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
+        io_point.reg_event(io_status_change, as_thread=True)
 
     # ------------------------------------------------------------------
     # Temperature inputs                                               
     # ------------------------------------------------------------------
     elif offset in TEMPERATURE_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
-        io_point.reg_event(RevPiEpics._io_value_change, as_thread=True)
+        io_point.reg_event(io_value_change, as_thread=True)
 
     elif offset in TEMPERATURE_INPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -100,7 +100,7 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
+        io_point.reg_event(io_status_change, as_thread=True)
 
     # ------------------------------------------------------------------
     # Analog outputs                                                   
@@ -120,7 +120,7 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(RevPiEpics._io_status_change, as_thread=True)
+        io_point.reg_event(io_status_change, as_thread=True)
 
     elif offset in ANALOG_OUTPUT_OFFSETS:
         revpi = RevPiEpics.get_revpi()
@@ -154,7 +154,7 @@ def builder_aio(
                     record = builder.aOut(
                         pv_name,
                         initial_value=io_point.value,
-                        on_update_name=RevPiEpics._record_write,
+                        on_update_name=record_write,
                         DRVH=value_max,
                         DRVL=value_min,
                         **fields
@@ -231,14 +231,12 @@ def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None
         logger.error("Unknown analog output offset: %s", offset)
         return (None, None, None, None)
 
-    get_val = RevPiEpics.get_io_offset_value
     return (
-        get_val(parent_offset + map_entry['range']),
-        get_val(parent_offset + map_entry['multiplier']),
-        get_val(parent_offset + map_entry['divisor']),
-        get_val(parent_offset + map_entry['offset']),
+        get_io_offset_value(parent_offset + map_entry['range']),
+        get_io_offset_value(parent_offset + map_entry['multiplier']),
+        get_io_offset_value(parent_offset + map_entry['divisor']),
+        get_io_offset_value(parent_offset + map_entry['offset']),
     )
-
 
 # Register the builder for AIO modules
 RevPiEpics._register_builder(ProductType.AIO, builder_aio)

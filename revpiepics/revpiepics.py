@@ -1,7 +1,8 @@
 import atexit
 import logging
 import functools
-from typing import Dict, Callable, Optional, cast
+from typing import Dict, Callable, Optional
+from dataclasses import dataclass, field
 
 import revpimodio2
 from revpimodio2.io import IntIO
@@ -9,9 +10,29 @@ from revpimodio2.io import IntIO
 from softioc import softioc, builder, pythonSoftIoc
 from epicsdbbuilder import recordnames
 
-from .utils import status_bit_length
-
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class IOMap:
+    io_name: str
+    pv_name: str
+    io_point: IntIO
+    record: pythonSoftIoc.RecordWrapper
+
+@dataclass
+class DicIOMap:
+    map_io: dict[str, IOMap] = field(default_factory=dict)
+    map_pv: dict[str, IOMap] = field(default_factory=dict)
+
+    def add(self, mapping: IOMap) -> None:
+        self.map_io[mapping.io_name] = mapping
+        self.map_pv[mapping.pv_name] = mapping
+
+    def get_by_io_name(self, io_name: str) -> Optional[IOMap]:
+        return self.map_io.get(io_name)
+
+    def get_by_pv_name(self, pv_name: str) -> Optional[IOMap]:
+        return self.map_pv.get(pv_name)
 
 class RevPiEpics:
     """
@@ -21,10 +42,7 @@ class RevPiEpics:
     and keeps both systems synchronized.
     """
 
-    __map_io_to_pv: Dict[str, str] = {}
-    __map_pv_to_io: Dict[str, str] = {}
-    __liste_pv: Dict[str, pythonSoftIoc.RecordWrapper] = {}
-    __liste_io: Dict[str, IntIO] = {}
+    __dictmap = DicIOMap()
     __revpi: revpimodio2.RevPiModIO | None = None
     __builder_registry: Dict[int, Callable] = {}
     __cleanup = False
@@ -111,12 +129,14 @@ class RevPiEpics:
             logger.error("IO name %s not found in RevPi IOs.", io_name)
             return None
 
-        if io_name in cls.__liste_io:
-            logger.error("The IO '%s' is already bound to a PV.", io_name)
+        if cls.__dictmap.get_by_io_name(io_name):
+            mapping = cls.__dictmap.get_by_io_name(io_name)
+            logger.error("The IO '%s' is already linked to PV '%s'.", io_name, mapping.record.name) # type: ignore
             return None
 
-        if pv_name and pv_name in cls.__liste_pv:
-            logger.error("The PV name '%s' is already in use.", pv_name)
+        if pv_name and cls.__dictmap.get_by_pv_name(pv_name):
+            mapping = cls.__dictmap.get_by_pv_name(pv_name)
+            logger.error("The PV name '%s' is already linked to IO '%s'.", mapping.record.name, mapping.io_name) # type: ignore
             return None
 
         io_point = getattr(cls.__revpi.io, io_name) # type: ignore
@@ -144,82 +164,10 @@ class RevPiEpics:
             record = builder_func(io_point=io_point, pv_name=pv_name, DRVL=DRVL, DRVH=DRVH, **fields)
             
         if record:
-            cls.__map_io_to_pv[io_name] = pv_name
-            cls.__map_pv_to_io[pv_name] = io_name
-            cls.__liste_io[io_name] = io_point
-            cls.__liste_pv[pv_name] = record
+            mapping = IOMap(io_name, pv_name, io_point, record)
+            cls.__dictmap.add(mapping)
 
         return record
-
-    @classmethod
-    def _io_value_change(cls, event) -> None:
-        """
-        Callback for handling changes in IO values.
-
-        Updates the corresponding EPICS PV when the RevPi IO changes.
-
-        Parameters
-        ----------
-        event : object
-            Event object containing `ioname` and `iovalue` attributes.
-        """
-        pv_name = cls.__map_io_to_pv.get(event.ioname)
-        if pv_name is not None:
-            record = cls.__liste_pv.get(pv_name)
-            if record:
-                record.set(event.iovalue)
-                logger.debug("IO %s → PV %s = %s", event.ioname, pv_name, event.iovalue)
-            else:
-                logger.error("PV '%s' mapped from IO '%s' is not found in internal registry.", pv_name, event.ioname)
-        else:
-            logger.error("No PV is mapped to IO '%s' in '_io_value_change'.", event.ioname)
-
-    @classmethod
-    def _io_status_change(cls, event) -> None:
-        """
-        Callback for changes in IO status values.
-
-        Converts the status word and updates the associated PV accordingly.
-
-        Parameters
-        ----------
-        event : object
-            Event with `ioname` and `iovalue` attributes.
-        """
-        pv_name = cls.__map_io_to_pv.get(event.ioname)
-        if pv_name is not None:
-            record = cls.__liste_pv.get(pv_name)
-            if record:
-                record.set(status_bit_length(event.iovalue))
-            else:
-                logger.error("PV '%s' mapped from IO '%s' is not found in internal registry (status).", pv_name, event.ioname)
-        else:
-            logger.error("No PV is mapped to IO '%s' in '_io_status_change'.", event.ioname)
-
-    @classmethod
-    def _record_write(cls, value: float, pv_name: str) -> None:
-        """
-        Callback when an EPICS PV value is written to.
-
-        Converts and writes the new value to the corresponding RevPi IO.
-
-        Parameters
-        ----------
-        value : float
-            New value from the EPICS PV.
-        pv_name : str
-            Name of the PV.
-        """
-        try:
-            pv_name = pv_name.split(':')[-1]
-            io_name = cls.__map_pv_to_io.get(pv_name)
-            if io_name is None:
-                raise KeyError(f"PV '{pv_name}' is not associated with any IO.")
-            io_point = cls.__liste_io[io_name]
-            io_point.value = round(value)
-            logger.debug("PV %s → IO %s = %d", pv_name, io_name, round(value))
-        except Exception as exc:
-            logger.error("Failed to write using PV %s: %s", pv_name, exc)
 
     @classmethod
     @_requires_initialization
@@ -238,97 +186,16 @@ class RevPiEpics:
             return None
 
     @classmethod
-    def get_io_name(cls, pv_name: str) -> (str | None):
+    def get_io_name(cls, io_name: str) -> (IOMap | None):
         """
-        Retrieves the IO name mapped to a PV name.
-
-        Parameters
-        ----------
-        pv_name : str
-            The name of the EPICS PV.
-
-        Returns
-        -------
-        str or None
-            The associated IO name or None.
         """
-        return cls.__map_pv_to_io.get(pv_name)
+        return cls.__dictmap.get_by_pv_name(io_name)
 
     @classmethod
-    def get_io_point(cls, io_name: str) -> (IntIO | None):
+    def get_pv_name(cls, pv_name: str) -> (IOMap | None):
         """
-        Retrieves the RevPi IO object for a given IO name.
-
-        Parameters
-        ----------
-        io_name : str
-            The name of the IO.
-
-        Returns
-        -------
-        IntIO or None
-            The IO object or None if not found.
         """
-        return cls.__liste_io.get(io_name)
-
-    @classmethod
-    def get_pv_name(cls, io_name: str) -> (str | None):
-        """
-        Retrieves the PV name mapped to a given IO name.
-
-        Parameters
-        ----------
-        io_name : str
-            The name of the IO.
-
-        Returns
-        -------
-        str or None
-            The associated PV name or None.
-        """
-        return cls.__map_io_to_pv.get(io_name)
-
-    @classmethod
-    def get_pv_record(cls, pv_name: str) -> (pythonSoftIoc.RecordWrapper | None):
-        """
-        Retrieves the EPICS record (PV) object for a given PV name.
-
-        Parameters
-        ----------
-        pv_name : str
-            The name of the PV.
-
-        Returns
-        -------
-        RecordWrapper or None
-            The record object or None.
-        """
-        return cls.__liste_pv.get(pv_name)
-    
-    @classmethod
-    @_requires_initialization
-    def get_io_offset_value(cls, offset: int) -> (int | None):
-        """
-        Returns the value of a RevPi IO by its memory offset.
-
-        Parameters
-        ----------
-        offset : int
-            The memory offset of the IO point.
-
-        Returns
-        -------
-        int or None
-            The value at the offset or None if unavailable.
-        """
-        try:
-            io = cast(list, cls.__revpi.io[offset]) # type: ignore
-            io_point = cast(IntIO,io[0])
-            value = io_point.value
-            return value
-        except IndexError:
-            logger.error("Unable to access RevPi IOs when reading offset value %d.", offset)
-            return None
+        return cls.__dictmap.get_by_pv_name(pv_name)
 
     @classmethod
     @_requires_initialization
@@ -393,7 +260,6 @@ class RevPiEpics:
         else:
             cls.__revpi.cycleloop(func, blocking=False) # type: ignore
 
-
     @classmethod
     def cleanup(cls) -> None:
         """
@@ -401,9 +267,9 @@ class RevPiEpics:
 
         This method is typically called at exit if cleanup is enabled.
         """
-        for io_point in cls.__liste_io.values():
-            if getattr(io_point, "type", None) == 301:
-                io_point.value = io_point.get_intdefaultvalue()
+        for mapping in cls.__dictmap.map_io.values():
+            if getattr(mapping.io_point, "type", None) == 301:
+                mapping.io_point.value = mapping.io_point.get_intdefaultvalue()
         logger.debug("Cleanup complete.")
     
     @classmethod
