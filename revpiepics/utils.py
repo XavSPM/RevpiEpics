@@ -1,3 +1,26 @@
+"""
+Utilities for EPICS and Revolution Pi IO interactions.
+
+This module provides helper functions used by EPICS builders to:
+- interpret RevPi IO values (e.g. bit-level status words),
+- manage PV-to-IO and IO-to-PV value propagation,
+- handle write callbacks from EPICS to RevPi,
+- extract values from raw offset addresses.
+
+Functions
+---------
+- status_bit_length: returns the bit length of a status word.
+- io_value_change: callback to propagate RevPi input changes to EPICS PVs.
+- io_status_change: callback to update status PVs based on status words.
+- record_write: callback to write from PV to RevPi output.
+- get_io_offset_value: reads an IO value at a specific offset (low-level).
+
+See Also
+--------
+RevPiEpics : Main class managing EPICS-PV bindings.
+aio.builder_aio : Uses these helpers to define EPICS records from RevPi AIO modules.
+"""
+
 from .revpiepics import RevPiEpics, logger
 from typing import cast
 from revpimodio2.io import IntIO

@@ -1,9 +1,26 @@
-"""EPICS builder helper for Revolution-Pi *AIO* modules.
+"""
+EPICS builder for Revolution Pi AIO modules.
 
-This module provides a *builder* function capable of translating raw IOs
-exposed by *revpimodio2* into appropriate EPICS records (ai, ao, mbbi, etc.),
-and registers it in the shared :data:`builder_registry` so that
-:pymeth:`RevPiEpics.builder` can automatically discover and use it.
+This module defines a `builder_aio` function that converts raw `revpimodio2` IO points
+from AIO modules into EPICS records (`ai`, `ao`, `mbbi`, etc.) using `softioc.builder`.
+
+The function is automatically registered with `RevPiEpics` so that all AIO modules
+can be handled transparently via `RevPiEpics.builder()`.
+
+Supported mappings
+------------------
+Offset → Record type:
+
+- 0, 2, 4, 6 → Analog input (`ai`)
+- 8–11 → Analog input status (`mbbi`)
+- 12, 14 → Temperature input (`ai`)
+- 16, 17 → Temperature input status (`mbbi`)
+- 18, 19 → Analog output status (`mbbi`)
+- 20, 22 → Analog output (`ao`)
+
+See Also
+--------
+RevPiEpics.builder : High-level automatic builder method
 """
 
 from softioc import builder
@@ -13,7 +30,7 @@ from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
 from softioc.pythonSoftIoc import RecordWrapper
 
-from typing import cast, Tuple
+from typing import Tuple
 
 # ---------------------------------------------------------------------------
 # Offset definitions — See the Revolution Pi documentation for the meaning
@@ -239,4 +256,4 @@ def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None
     )
 
 # Register the builder for AIO modules
-RevPiEpics._register_builder(ProductType.AIO, builder_aio)
+RevPiEpics.register_builder(ProductType.AIO, builder_aio)

@@ -79,67 +79,83 @@ pip install cothread
 ### Minimal example
 
 ```python
-from softioc import builder, softioc
 from revpiepics import RevPiEpics
-
+from softioc import builder
 builder.SetDeviceName("TEST")
 
 # Initialisation 
-RevPiEpics.initialize(debug=True, cycletime=200) # debug and cycletime are optional
+RevPiEpics.init(debug=True, cycletime=200) # debug and cycletime are optional
 
-ai1 = a.builder("OutputStatus_2_i06") # PV name = TEST:OutputStatus_2_i06
-ai2 = a.builder("OutputStatus_1_i06", "Out1Status") # PV name = TEST:Out1Status
+ai1 = RevPiEpics.builder("OutputStatus_2_i06") # PV name = TEST:OutputStatus_2_i06
+ai2 = RevPiEpics.builder("OutputStatus_1_i06", "Out1Status") # PV name = TEST:Out1Status
 
 # Automatic type detection
-ai3 = a.builder("InputStatus_1_i06")
-ai4 = a.builder("InputValue_1_i06")
+ai3 = RevPiEpics.builder("InputStatus_1_i06")
+ai4 = RevPiEpics.builder("InputValue_1_i06")
 
 # Advanced configuration of the softioc option
-ao1 = a.builder(io_name="OutputValue_2_i06", pv_name="Out2", DESC="Out 1", EGU="mV")  # Advanced config
+ao1 = RevPiEpics.builder(io_name="OutputValue_2_i06", pv_name="Out2", DESC="Out 1", EGU="mV")  # Advanced config
 
 # Set limits (only for output)
-ao2 = a.builder(io_name="OutputValue_1_i06", pv_name="Out1", DRVL="8000", DRVH=19000)
+ao2 = RevPiEpics.builder(io_name="OutputValue_1_i06", pv_name="Out1", DRVL="8000", DRVH=19000)
 
-# Start the IOC
-builder.LoadDatabase()
-softioc.iocInit()
-
-# Start IO loop
+# Start IO loop and IOC
 RevPiEpics.start() 
-
-# Keep the IOC running
-softioc.non_interactive_ioc()  # or softioc.interactive_ioc(globals())
 ```
 
-### Example of the use of cyclic programming with RevPiModIO
+### Example of the use of cyclic programming with cothread
 
-This example shows how to implement a cyclic processing loop with “revpimodio2”.
+This example shows how to implement a cyclic processing loop with “cothread”.
 
 ```python
-from softioc import builder, softioc
-from revpimodio2 import RevPiModIO
+from softioc import builder
 from revpiepics import RevPiEpics
+import cothread
 
-def cycleprogram(cycletools):
-    """This function is automatically executed every IO cycle."""
-    # Write the value of the first input to the first output
-    rpi.io.OutputValue_1_i06.value = rpi.io.InputValue_1_i06.value
+builder.SetDeviceName("TEST")
+RevPiEpics.init()
+
 
 ai1 = RevPiEpics.builder(io_name="OutputValue_1_i06", pv_name="Out1")
 ai2 = RevPiEpics.builder(io_name="InputValue_1_i06", pv_name="Int1")
 
-builder.SetDeviceName("TEST")
-RevPiEpics.initialize(debug=True)
-builder.LoadDatabase()
-softioc.iocInit()
+def update():
+    while True:
+        ai1.set(ai2.get() + 100)
+        cothread.Sleep(1)
 
-rpi = RevPiEpics.get_revpi()
-rpi.cycleloop(cycleprogram, cycletime=40, blocking=False)
+cothread.Spawn(update)
+
 RevPiEpics.start()
-softioc.non_interactive_ioc()
 ```
 
-### Example of the use of cyclic programming with RevPiModIO
+### Example of the use of cyclic programming with asyncio
+
+This example shows how to implement a cyclic processing loop with “asyncio”.
+
+```python
+from softioc import builder, asyncio_dispatcher
+from revpiepics import RevPiEpics
+import asyncio
+
+# Create an asyncio dispatcher, the event loop is now running
+dispatcher = asyncio_dispatcher.AsyncioDispatcher()
+
+builder.SetDeviceName("TEST")
+RevPiEpics.init()
+
+ai1 = RevPiEpics.builder(io_name="OutputValue_1_i06", pv_name="Out1")
+ai2 = RevPiEpics.builder(io_name="InputValue_1_i06", pv_name="Int1")
+
+async def update():
+    while True:
+        ai1.set(ai2.get() + 100)
+        await asyncio.sleep(1)
+
+dispatcher(update)
+
+RevPiEpics.start(dispatcher=dispatcher)
+```
 
 ## 📦 Supported Modules
 

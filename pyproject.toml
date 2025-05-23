@@ -21,10 +21,9 @@ classifiers = [
 
 dependencies = [
   "softioc>=4.6.1",
-  "revpimodio2>=2.8.0",
+  "revpimodio2>=2.8.0"
 ]
 
 [project.urls]
-# Optional – fill in as needed
 Homepage = "https://github.com/XavSPM/RevpiEpics"
 Repository = "https://github.com/XavSPM/RevpiEpics"
