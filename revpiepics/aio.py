@@ -24,13 +24,16 @@ RevPiEpics.builder : High-level automatic builder method
 """
 
 from softioc import builder
+
 from .revpiepics import RevPiEpics, logger
-from .utils import status_bit_length, io_value_change, io_status_change, record_write, get_io_offset_value
+from .recod import RecordDirection, RecordType
+from .iomap import IOMap
+from .utils import status_bit_length, record_write, get_io_offset_value
+
 from revpimodio2.pictory import ProductType, AIO
 from revpimodio2.io import IntIO
-from softioc.pythonSoftIoc import RecordWrapper
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 # ---------------------------------------------------------------------------
 # Offset definitions — See the Revolution Pi documentation for the meaning
@@ -45,12 +48,13 @@ ANALOG_OUTPUT_OFFSETS = [20, 22]
 
 
 def builder_aio(
+    io_name: str,
     io_point: IntIO,
     pv_name: str,
     DRVL=None,
     DRVH=None,
     **fields,
-) -> (RecordWrapper | None):
+) -> Optional[IOMap]:
     """
     Create an EPICS record bound to *io_point*.
 
@@ -82,13 +86,16 @@ def builder_aio(
     parent_offset = io_point._parentdevice._offset
     offset = io_point.address - parent_offset
     record = None
+    record_direction = None
+    record_type = None
 
     # ------------------------------------------------------------------
-    # Analog inputs                                                    
+    # Analog inputs
     # ------------------------------------------------------------------
     if offset in ANALOG_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
-        io_point.reg_event(io_value_change, as_thread=True)
+        record_direction = RecordDirection.INPUT
+        record_type = RecordType.ANALOG
 
     elif offset in ANALOG_INPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -99,14 +106,16 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(io_status_change, as_thread=True)
+        record_direction = RecordDirection.INPUT
+        record_type = RecordType.STATUS
 
     # ------------------------------------------------------------------
-    # Temperature inputs                                               
+    # Temperature inputs
     # ------------------------------------------------------------------
     elif offset in TEMPERATURE_INPUT_OFFSETS:
         record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
-        io_point.reg_event(io_value_change, as_thread=True)
+        record_direction = RecordDirection.INPUT
+        record_type = RecordType.ANALOG
 
     elif offset in TEMPERATURE_INPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -117,10 +126,11 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(io_status_change, as_thread=True)
+        record_direction = RecordDirection.INPUT
+        record_type = RecordType.ANALOG
 
     # ------------------------------------------------------------------
-    # Analog outputs                                                   
+    # Analog outputs
     # ------------------------------------------------------------------
     elif offset in ANALOG_OUTPUT_STATUS_OFFSETS:
         record = builder.mbbIn(
@@ -137,10 +147,11 @@ def builder_aio(
             initial_value=status_bit_length(io_point.value),
             **fields,
         )
-        io_point.reg_event(io_status_change, as_thread=True)
+        record_direction = RecordDirection.INPUT
+        record_type = RecordType.STATUS
 
     elif offset in ANALOG_OUTPUT_OFFSETS:
-        revpi = RevPiEpics.get_revpi()
+        revpi = RevPiEpics.get_mod_io()
 
         if not revpi or not revpi.io:
             logger.error("Cannot access RevPi IOs for analog output processing.")
@@ -176,17 +187,34 @@ def builder_aio(
                         DRVL=value_min,
                         **fields
                     )
+                    record_direction = RecordDirection.OUTPUT
+                    record_type = RecordType.ANALOG
                 else:
                     logger.error("Incomplete conversion parameters for analog output '%s'", io_point.name)
             else:
                 logger.error("Analog output '%s' is disabled or has invalid parameters", io_point.name)
-
-    return record
+    
+    if record and record_direction and record_type : 
+        mapping = IOMap(
+                    io_name=io_name,
+                    pv_name=pv_name,
+                    io_point=io_point,
+                    record=record,
+                    direction=record_direction,
+                    record_type=record_type
+                )
+        return mapping
+    else:
+        return None
 
 
 def _output_range(range: int) -> Tuple[int | None, int | None]:
     """
     Converts an AIO range code into its corresponding engineering unit limits.
+
+    Parameters
+    ----------
+    range : int
 
     Returns
     -------
@@ -195,31 +223,31 @@ def _output_range(range: int) -> Tuple[int | None, int | None]:
     """
     match range:
         case AIO.OUT_RANGE_OFF:
-            return (None, None)
+            return None, None
         case AIO.OUT_RANGE_0_5V:
-            return (0, 5000)
+            return 0, 5000
         case AIO.OUT_RANGE_0_10V:
-            return (0, 10000)
+            return 0, 10000
         case AIO.OUT_RANGE_N5_5V:
-            return (-5000, 5000)
+            return -5000, 5000
         case AIO.OUT_RANGE_N10_10V:
-            return (-10000, 10000)
+            return -10000, 10000
         case AIO.OUT_RANGE_0_5P5V:
-            return (0, 5500)
+            return 0, 5500
         case AIO.OUT_RANGE_0_11V:
-            return (0, 11000)
+            return 0, 11000
         case AIO.OUT_RANGE_N5P5_5P5V:
-            return (-5500, 5500)
+            return -5500, 5500
         case AIO.OUT_RANGE_N11_11V:
-            return (-11000, 11000)
+            return -11000, 11000
         case AIO.OUT_RANGE_4_20MA:
-            return (4000, 20000)
+            return 4000, 20000
         case AIO.OUT_RANGE_0_20MA:
-            return (0, 20000)
+            return 0, 20000
         case AIO.OUT_RANGE_0_24MA:
-            return (0, 24000)
+            return 0, 24000
         case _:
-            return (None, None)
+            return None, None
 
 
 def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None, int | None, int | None, int | None]:
@@ -246,7 +274,7 @@ def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None
     map_entry = offset_map.get(offset)
     if not map_entry:
         logger.error("Unknown analog output offset: %s", offset)
-        return (None, None, None, None)
+        return None, None, None, None
 
     return (
         get_io_offset_value(parent_offset + map_entry['range']),

@@ -21,9 +21,10 @@ RevPiEpics : Main class managing EPICS-PV bindings.
 aio.builder_aio : Uses these helpers to define EPICS records from RevPi AIO modules.
 """
 
-from .revpiepics import RevPiEpics, logger
 from typing import cast
 from revpimodio2.io import IntIO
+import logging
+logger = logging.getLogger(__name__)
 
 def status_bit_length(value: int) -> int:
     """
@@ -46,6 +47,7 @@ def io_value_change(event) -> None:
     """
     Callback for changes in IO status values.
     """
+    from .revpiepics import RevPiEpics
     mapping = RevPiEpics.get_io_name(event.ioname)
     if mapping is not None:
         mapping.record.set(event.iovalue)
@@ -63,6 +65,8 @@ def io_status_change(event) -> None:
     event : object
         Event with `ioname` and `iovalue` attributes.
     """
+    from .revpiepics import RevPiEpics
+    dic_mapping = RevPiEpics.get_dic_io_map()
     mapping = RevPiEpics.get_io_name(event.ioname)
     if mapping is not None:
         mapping.record.set(status_bit_length(event.iovalue))
@@ -82,13 +86,15 @@ def record_write(value: float, pv_name: str) -> None:
     pv_name : str
         Name of the PV.
     """
+    from .revpiepics import RevPiEpics
     try:
         pv_name = pv_name.split(':')[-1]
-        mapping = RevPiEpics.get_pv_name(pv_name)
+        dic_mapping = RevPiEpics.get_dic_io_map()
+        mapping = dic_mapping.get_by_pv_name(pv_name)
         if mapping is None:
             raise KeyError(f"PV '{pv_name}' is not associated with any IO.")
-        mapping.io_point.value = round(value)
-        logger.debug("PV %s → IO %s = %d", mapping.pv_name, mapping.io_name, round(value))
+        if not mapping.update_record:
+            mapping.update_record = True
     except Exception as exc:
         logger.error("Failed to write using PV %s: %s", pv_name, exc)
 
@@ -106,9 +112,10 @@ def get_io_offset_value(offset: int) -> (int | None):
     int or None
         The value at the offset or None if unavailable.
     """
+    from .revpiepics import RevPiEpics
     try:
-        revpi = RevPiEpics.get_revpi()
-        io = cast(list, revpi.io[offset]) # type: ignore
+        rev_pi = RevPiEpics.get_mod_io()
+        io = cast(list, rev_pi.io[offset])
         io_point = cast(IntIO,io[0])
         value = io_point.value
         return value
