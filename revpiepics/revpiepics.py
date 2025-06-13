@@ -7,6 +7,7 @@ Regular refresh at defined frequency.
 """
 from __future__ import annotations
 
+import atexit
 import functools
 import logging
 from threading import Lock
@@ -270,6 +271,9 @@ class RevPiEpics:
         try:
             # Load EPICS database with all created PVs
             builder.LoadDatabase()
+
+            # Ensure automatic cleanup on program exit
+            atexit.register(cls.stop)
 
             # Initialize EPICS IOC with optional dispatcher
             if dispatcher:
