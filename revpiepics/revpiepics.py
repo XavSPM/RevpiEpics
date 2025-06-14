@@ -1,304 +1,511 @@
+# -*- coding: utf-8 -*-
+"""RevPi ⇔ EPICS bridge (SoftIOC-only, event-driven sync).
+
+RevPi to EPICS bidirectional bridge with SoftIOC-only implementation and event-driven synchronization.
+Controlled synchronization with explicit process image read/write via readprocimg() and writeprocimg().
+Regular refresh at defined frequency.
+"""
+from __future__ import annotations
+
 import atexit
-import logging
 import functools
-from typing import Dict, Callable, Optional
-from dataclasses import dataclass, field
+import logging
+from threading import Lock
+from timeit import default_timer
+from typing import Callable, Dict, Optional, cast
+
+from .pvsync import PVSyncThread
+from .iomap import DicIOMap, IOMap
 
 import revpimodio2
-
-from softioc import softioc, builder, pythonSoftIoc
+from softioc import builder, pythonSoftIoc, softioc
 from softioc.asyncio_dispatcher import AsyncioDispatcher
-from epicsdbbuilder import recordnames
+from epicsdbbuilder.recordnames import SimpleRecordNames
 
 logger = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
-class IOMap:
-    io_name: str
-    pv_name: str
-    io_point: revpimodio2.io.IntIO
-    record: pythonSoftIoc.RecordWrapper
-
-@dataclass
-class DicIOMap:
-    map_io: dict[str, IOMap] = field(default_factory=dict)
-    map_pv: dict[str, IOMap] = field(default_factory=dict)
-
-    def add(self, mapping: IOMap) -> None:
-        self.map_io[mapping.io_name] = mapping
-        self.map_pv[mapping.pv_name] = mapping
-
-    def get_by_io_name(self, io_name: str) -> Optional[IOMap]:
-        return self.map_io.get(io_name)
-
-    def get_by_pv_name(self, pv_name: str) -> Optional[IOMap]:
-        return self.map_pv.get(pv_name)
-
 class RevPiEpics:
+    """Bridge between RevPi and EPICS with bidirectional synchronization.
+    
+    This class provides a bridge between Revolution Pi (RevPi) hardware and EPICS 
+    control system, enabling bidirectional communication and synchronization of 
+    process variables.
     """
-    Bridge between a Revolution Pi and EPICS.
-
-    The class exposes RevPi I/O points as EPICS process variables (PVs),
-    and keeps both systems synchronized.
-    """
-
+    # Internal mapping dictionary for I/O mappings
     _dictmap = DicIOMap()
-    _revpi: revpimodio2.RevPiModIO | None = None
+    # RevPi ModIO instance for hardware communication
+    _revpi: Optional[revpimodio2.RevPiModIO] = None
+    # Registry of builder functions for different product types
     _builder_registry: Dict[int, Callable] = {}
-    _cleanup = False
-    _initialize = False
+    # Initialization state flag
+    _initialized = False
+    # Cleanup flag for automatic resource cleanup
+    _cleanup = True
+    # Auto-prefix flag for PV naming
     _auto_prefix = False
+    # Cycle time in milliseconds
+    _cycle_time_ms = None
+    # PV synchronization thread
+    _pv_sync: Optional["PVSyncThread"] = None
+    # Thread synchronization lock
+    _lock = Lock()
+    # Custom user functions to execute in sync cycle
+    _custom_functions: Dict[str, Callable] = {}
+    # Lock for custom functions access
+    _custom_functions_lock = Lock()
 
     @staticmethod
-    def _requires_initialization(func):
-        """
-        Decorator to ensure the class has been initialized before executing a method.
+    def _requires_init(func):
+        """Decorator to check initialization before method execution."""
 
-        If the class has not been initialized, the call is ignored and a warning is logged.
-        """
         @functools.wraps(func)
         def wrapper(cls, *args, **kwargs):
-            if not cls._initialize:
-                logger.warning("Call to '%s' ignored: RevPiEpics is not initialized.", func.__name__)
-                return  # Do nothing
+            if not cls._initialized:
+                raise RevPiEpicsInitError(
+                    "RevPiEpics not initialized. Call init() first."
+                )
             return func(cls, *args, **kwargs)
+
         return wrapper
 
     @classmethod
-    def init(cls, 
-             cycletime: Optional[int] = None, 
-             debug: bool = False, 
-             cleanup: bool = True, 
-             auto_prefix: bool = False) -> None:
-        """
-        Initializes the RevPi connection with given parameters.
+    def init(
+            cls,
+            *,
+            cycletime: Optional[int] = 200,
+            debug: bool = False,
+            cleanup: bool = True,
+            auto_prefix: bool = False
+    ) -> None:
+        """Initialize the RevPi-EPICS bridge.
 
-        Parameters
-        ----------
-        cycletime : int, optional
-            Cycle time in milliseconds.
-        debug : bool, optional
-            Enable debug logging (default is False).
-        cleanup : bool, optional
-            Reset outputs on exit if True (default is True).
-        auto_prefix : bool, optional
-            Automatically prefix PV names with core/device names (default is False).
-        """
-        cls._revpi = revpimodio2.RevPiModIO(autorefresh=True, debug=debug)
-        if cycletime is not None:
-            cls._revpi.cycletime = cycletime
-        cls._cleanup = cleanup
-        cls._initialize = True
-        cls._auto_prefix = auto_prefix
+        Sets up the connection to RevPi hardware and configures the bridge parameters.
+        Must be called before using any other methods.
 
-        logging.basicConfig(
-            level=logging.DEBUG if debug else logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s" if debug else "[%(levelname)s]: %(message)s"
-        )
-
-    @classmethod
-    @_requires_initialization
-    def builder(
-        cls,
-        io_name: str,
-        pv_name: Optional[str] = None,
-        DRVL: Optional[float] = None,
-        DRVH: Optional[float] = None,
-        **fields) -> Optional[pythonSoftIoc.RecordWrapper]:
-        """
-        Creates an EPICS record (PV) and binds it to a RevPi IO.
-
-        Parameters
-        ----------
-        io_name : str
-            Name of the IO to bind.
-        pv_name : Optional[str]
-            Name of the PV to create (optional, defaults to io_name).
-        DRVL : Optional[float]
-            Lower display limit.
-        DRVH : Optional[float]
-            Upper display limit.
-        **fields :
-            Additional fields passed to the PV constructor.
-
-        Returns
-        -------
-        RecordWrapper or None
-            The created EPICS PV record or None if creation failed.
-        """
-
-        if not hasattr(cls._revpi.io, io_name): # type: ignore
-            logger.error("IO name %s not found in RevPi IOs.", io_name)
-            return None
-        
-        io_point = getattr(cls._revpi.io, io_name) # type: ignore
-
-        mapping_io = cls._dictmap.get_by_io_name(io_name)
-        if mapping_io:
-            logger.error("The IO '%s' is already linked to PV '%s'.", io_name, mapping_io.record.name)
-            return None
-
-        if pv_name:
-            mapping_pv = cls._dictmap.get_by_pv_name(pv_name)
-            if mapping_pv:
-                logger.error("The PV name '%s' is already linked to IO '%s'.", mapping_pv.record.name, mapping_pv.io_name)
-                return None
-        
-        product_type = io_point._parentdevice._producttype
-        builder_func = cls._builder_registry.get(product_type)
-
-        if builder_func is None:
-            logger.error("No builder registered for product type %s.", product_type)
-            return None
-
-        if pv_name is None:
-            pv_name = io_name
-        
-        if cls._auto_prefix: 
-            record_name : recordnames.SimpleRecordNames = builder.GetRecordNames()  # type: ignore
-            default_prefix = record_name.prefix
-            record_name.prefix = []
-            if cls._revpi.core and cls._revpi.core.name: # type: ignore
-                record_name.PushPrefix(cls._revpi.core.name) # type: ignore
-            if io_point._parentdevice and io_point._parentdevice.name:
-                record_name.PushPrefix(io_point._parentdevice.name)
-            record = builder_func(io_point=io_point, pv_name=pv_name, DRVL=DRVL, DRVH=DRVH, **fields)
-            record_name.prefix = default_prefix
-        else:
-            record = builder_func(io_point=io_point, pv_name=pv_name, DRVL=DRVL, DRVH=DRVH, **fields)
+        Args:
+            cycletime: Cycle time in milliseconds (minimum 20ms)
+            debug: Enable debug mode with verbose logging
+            cleanup: Enable automatic cleanup on exit
+            auto_prefix: Enable automatic PV prefixing based on device hierarchy
             
-        if record:
-            mapping = IOMap(io_name, pv_name, io_point, record)
-            cls._dictmap.add(mapping)
+        Raises:
+            RevPiEpicsInitError: If initialization fails
+            ValueError: If cycletime is less than 20ms
+        """
+        with cls._lock:
+            if cls._initialized:
+                logger.warning("RevPiEpics already initialized")
+                return
 
-        return record
+            try:
+                # Initialize RevPi ModIO without auto-refresh (we handle sync manually)
+                cls._revpi = revpimodio2.RevPiModIO(autorefresh=False, debug=debug)
+
+                # Validate and set cycle time
+                if cycletime is not None:
+                    if cycletime < 20:
+                        raise ValueError(f"Minimum cycle time: 20 ms")
+                    cls._cycle_time_ms = cycletime
+
+                cls._cleanup = cleanup
+                cls._auto_prefix = auto_prefix
+
+                # Configure logging based on debug mode
+                log_level = logging.DEBUG if debug else logging.INFO
+                log_format = (
+                    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+                    if debug else "[%(levelname)s]: %(message)s"
+                )
+                logging.basicConfig(level=log_level, format=log_format)
+
+                # Initialize PV synchronization thread
+                cls._pv_sync = PVSyncThread(cls)
+                cls._initialized = True
+
+                logger.debug(f"RevPiEpics initialized")
+
+            except Exception as e:
+                logger.error(f"Initialization error: {e}")
+                raise RevPiEpicsInitError(f"Initialization failed: {e}") from e
 
     @classmethod
-    @_requires_initialization
-    def get_revpi(cls) -> Optional[revpimodio2.RevPiModIO]:
-        """
-        Returns the active RevPiModIO instance.
+    @_requires_init
+    def builder(
+            cls,
+            io_name: str,
+            pv_name: Optional[str] = None,
+            DRVL: Optional[float] = None,
+            DRVH: Optional[float] = None,
+            **fields,
+    ) -> Optional[pythonSoftIoc.RecordWrapper]:
+        """Create an EPICS PV linked to a RevPi I/O point.
 
-        Returns
-        -------
-        RevPiModIO | None
-            The RevPi communication object or None if not Initialized
+        This method creates a bidirectional mapping between a RevPi I/O point and an EPICS PV.
+        The appropriate builder function is selected based on the RevPi device product type.
+
+        Args:
+            io_name: Name of the RevPi I/O point (must exist in RevPi configuration)
+            pv_name: Name of the EPICS PV (defaults to io_name if not specified)
+            DRVL: Drive low limit for the PV (optional)
+            DRVH: Drive high limit for the PV (optional)
+            **fields: Additional EPICS record fields
+
+        Returns:
+            RecordWrapper instance if successful, None if creation failed
+            
+        Raises:
+            RevPiEpicsBuilderError: If I/O name not found, already mapped, or no builder available
         """
-        if isinstance(cls._revpi, revpimodio2.RevPiModIO):
-            return cls._revpi
-        else:
+        try:
+            # Verify RevPi instance is available
+            if not cls._revpi:
+                cls._initialized = False
+                raise RevPiEpicsBuilderError(f"Initialization error")
+            
+            # Check if I/O point exists in RevPi configuration
+            if not hasattr(cls._revpi.io, io_name):
+                raise RevPiEpicsBuilderError(f"I/O '{io_name}' not found")
+
+            # Check if I/O is already mapped
+            if cls._dictmap.get_by_io_name(io_name):
+                raise RevPiEpicsBuilderError(f"I/O '{io_name}' already mapped")
+
+            # Check if PV name already exists
+            if pv_name and cls._dictmap.get_by_pv_name(pv_name):
+                raise RevPiEpicsBuilderError(f"PV '{pv_name}' already exists")
+
+            # Get I/O point and its parent device information
+            io_point = getattr(cls._revpi.io, io_name)
+            product_type = io_point._parentdevice._producttype
+
+            # Select appropriate builder function based on product type
+            build_func = cls._builder_registry.get(product_type)
+            if build_func is None:
+                raise RevPiEpicsBuilderError(
+                    f"No builder for product type {product_type}"
+                )
+
+            # Use I/O name as PV name if not specified
+            if pv_name is None:
+                pv_name = io_name
+
+            # Build with or without automatic prefixing
+            if cls._auto_prefix:
+                mapping = cls._build_with_prefix(
+                    build_func=build_func, 
+                    io_name=io_name, 
+                    io_point=io_point, 
+                    pv_name=pv_name, 
+                    DRVL=DRVL, 
+                    DRVH=DRVH, 
+                    **fields
+                )
+            else:
+                mapping = build_func(
+                    io_name=io_name,
+                    io_point=io_point,
+                    pv_name=pv_name,
+                    DRVL=DRVL,
+                    DRVH=DRVH, 
+                    **fields
+                )
+
+            # Add mapping to dictionary and return record wrapper
+            if mapping:
+                cls._dictmap.add(mapping)
+                logger.debug(f"PV '{pv_name}' created for I/O '{io_name}'")
+                return mapping.get_record()
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"PV creation error: {e}")
             return None
 
     @classmethod
-    def get_io_name(cls, io_name: str) -> Optional[IOMap]:
+    def _build_with_prefix(cls, build_func, io_name ,io_point, pv_name, DRVL, DRVH, **fields):
+        """Build a PV with automatic prefix based on device hierarchy.
+        
+        Constructs PV names with automatic prefixes derived from RevPi core and device names.
         """
-        Returns the IOMap associated with a given IO name.
+        rec_names = cast(SimpleRecordNames, builder.GetRecordNames())
+        saved_prefix = rec_names.prefix.copy()
 
-        Parameters
-        ----------
-        io_name : str
-            Name of the IO.
+        try:
+            # Add core name as prefix if available
+            if cls._revpi:
+                if cls._revpi.core and cls._revpi.core.name:
+                    rec_names.PushPrefix(cls._revpi.core.name)
+                # Add parent device name as additional prefix if available
+                if io_point._parentdevice and io_point._parentdevice.name:
+                    rec_names.PushPrefix(io_point._parentdevice.name)
 
-        Returns
-        -------
-        IOMap or None
-            The associated IO mapping object, or None if not found.
-        """
-        return cls._dictmap.get_by_io_name(io_name)
+            return build_func(
+                io_name=io_name,
+                io_point=io_point, pv_name=pv_name,
+                DRVL=DRVL, DRVH=DRVH, **fields
+            )
+        finally:
+            # Always restore original prefix
+            rec_names.prefix = saved_prefix
 
     @classmethod
-    def get_pv_name(cls, pv_name: str) -> Optional[IOMap]:
+    @_requires_init
+    def start(
+            cls,
+            interactive: bool = False,
+            dispatcher: Optional[AsyncioDispatcher] = None
+    ) -> None:
+        """Start the RevPi-EPICS bridge.
+
+        Loads the EPICS database, initializes the IOC, and starts the synchronization thread.
+        This method blocks until the IOC is stopped.
+
+        Args:
+            interactive: Run in interactive mode (allows command line interaction)
+            dispatcher: Optional asyncio dispatcher for advanced async operations
+            
+        Raises:
+            RuntimeError: If synchronization thread fails to initialize
         """
-        Returns the IOMap associated with a given PV name.
+        try:
+            # Load EPICS database with all created PVs
+            builder.LoadDatabase()
 
-        Parameters
-        ----------
-        pv_name : str
-            Name of the PV.
-
-        Returns
-        -------
-        IOMap or None
-            The associated IO mapping object, or None if not found.
-        """
-        return cls._dictmap.get_by_pv_name(pv_name)
-
-    @classmethod
-    @_requires_initialization
-    def start(cls, interactive: bool = False, dispatcher: Optional[AsyncioDispatcher] = None) -> None:
-        """
-        Starts the EPICS IOC and the RevPi main loop.
-
-        Depending on the `interactive` flag, the method will
-        either start a interactive IOC or a background one.
-
-        Parameters
-        ----------
-        interactive : bool, optional
-            Whether to run the IOC in interactive mode (default is False).
-        dispatcher : AsyncioDispatcher, optional
-            use asyncio dispatcher.
-        """
-        cls._revpi.autorefresh_all() # type: ignore
-        builder.LoadDatabase()
-        if dispatcher:
-            softioc.iocInit(dispatcher)
-        else:
-            softioc.iocInit()
-        if interactive:
-            cls._revpi.mainloop(blocking=False) # type: ignore
+            # Ensure automatic cleanup on program exit
             atexit.register(cls.stop)
-            softioc.interactive_ioc(globals())
-        else:
-            cls._revpi.mainloop(blocking=False) # type: ignore
-            atexit.register(cls.stop)
-            softioc.non_interactive_ioc()
-    
+
+            # Initialize EPICS IOC with optional dispatcher
+            if dispatcher:
+                softioc.iocInit(dispatcher)
+            else:
+                softioc.iocInit()
+
+            # Start PV synchronization thread
+            if cls._pv_sync:
+                cls._pv_sync.start()
+                logger.debug("RevPi-EPICS bridge started")
+            else:
+                raise RuntimeError(f"Synchronization thread error")
+
+            # Run IOC in interactive or non-interactive mode
+            if interactive:
+                softioc.interactive_ioc(globals())
+            else:
+                softioc.non_interactive_ioc()
+
+        except Exception as e:
+            logger.error(f"Startup error: {e}")
+            raise
+
+        finally:
+            # Always attempt cleanup on exit
+            cls.stop()
+
     @classmethod
-    @_requires_initialization
+    @_requires_init
     def stop(cls) -> None:
+        """Stop the RevPi-EPICS bridge and cleanup resources.
+        
+        Stops the synchronization thread, closes RevPi connection, and resets initialization state.
         """
-        Stops the RevPi main loop and optionally resets outputs.
+        logger.debug("Stopping RevPi-EPICS bridge...")
 
-        If `cleanup` was enabled during initialization, this method
-        will reset all analog outputs to their default values.
-        """
-        if cls._cleanup:
-            cls.cleanup()
-        cls._revpi.exit() # type: ignore
-        logger.debug("RevPi main loop stopped.")
+        # Stop synchronization thread
+        if cls._pv_sync:
+            cls._pv_sync.stop()
+
+        # Close RevPi connection
+        if cls._revpi:
+            cls._revpi.exit()
+            
+        # Reset initialization state
+        with cls._lock:
+            cls._initialized = False
+
 
     @classmethod
-    def cleanup(cls) -> None:
-        """
-        Resets all analog outputs (type 301) to their default value.
+    def register_builder(cls, product_type: int, func: Callable) -> None:
+        """Register a builder function for a specific RevPi product type.
 
-        This method is typically called at exit if cleanup is enabled.
-        """
-        for mapping in cls._dictmap.map_io.values():
-            if getattr(mapping.io_point, "type", None) == 301:
-                try:
-                    mapping.io_point.value = mapping.io_point.get_intdefaultvalue()
-                except Exception as e:
-                    logger.warning("Failed to reset IO '%s': %s", mapping.io_name, e)
-        logger.debug("Cleanup complete.")
-    
-    @classmethod
-    def register_builder(cls, product_type: int, builder_func: Callable) -> None:
-        """
-        Stores a construction function for a given module type.
+        Builder functions are responsible for creating appropriate EPICS PVs for different 
+        types of RevPi modules (e.g., digital I/O, analog I/O, etc.).
 
-        Parameters
-        ----------
-        product_type : ProductType
-            Type of product (ProductType.AIO, ProductType.DIO, etc.).
-        builder_func : Callable
-            Function that takes the arguments (io_point, pv_name, DRVL, DRVH, **fields)
-            and returns a RecordWrapper object.
+        Args:
+            product_type: RevPi product type identifier (integer)
+            func: Builder function that creates PV mappings
+            
+        Raises:
+            TypeError: If product_type is not an integer or func is not callable
         """
         if not isinstance(product_type, int):
-            raise TypeError("product_type must be an int (from revpimodio2.pictory.ProductType)")
-        if not callable(builder_func):
-            raise TypeError("builder_func must be callable")
+            raise TypeError("product_type must be an integer")
+        if not callable(func):
+            raise TypeError("func must be callable")
 
-        cls._builder_registry[product_type] = builder_func
+        cls._builder_registry[product_type] = func
+        logger.debug(f"Builder registered for type {product_type}")
+
+    @classmethod
+    def get_mappings(cls) -> Dict[str, IOMap]:
+        """Return all current I/O to PV mappings.
+        
+        Returns:
+            Dictionary of all active mappings keyed by I/O name
+        """
+        return cls._dictmap.get_all_mappings()
+
+    @classmethod
+    def remove_mapping(cls, io_name: str) -> bool:
+        """Remove an I/O to PV mapping.
+        
+        Args:
+            io_name: Name of the I/O point to remove from mapping
+            
+        Returns:
+            True if mapping was removed, False if not found
+        """
+        return cls._dictmap.remove(io_name)
+
+    @classmethod
+    def add_loop_task(cls, func: Callable) -> None:
+        """Add a custom function to execute in the synchronization cycle.
+
+        Custom functions are executed during each synchronization cycle, allowing users 
+        to implement custom logic that runs alongside the standard I/O synchronization.
+
+        Args:
+            func: Function to execute (must be callable with a unique __name__)
+            
+        Raises:
+            TypeError: If func is not callable
+            ValueError: If function name is None or already exists
+        """
+        if not callable(func):
+            raise TypeError("func must be callable")
+
+        with cls._custom_functions_lock:
+            func_name = getattr(func, '__name__', None)
+            if func_name is None:
+                raise ValueError(f"Function error")
+
+            elif func_name in cls._custom_functions:
+                raise ValueError(f"Function {func_name} already exists")
+
+            # Store function for execution in sync cycle
+            cls._custom_functions[func_name] = func
+
+        logger.debug(f"Custom function added to synchronization cycle")
+    
+    @classmethod
+    def remove_loop_task(cls, func: Callable) -> bool:
+        """Remove a loop task from the synchronization cycle.
+
+        Args:
+        func: Function to remove from the loop cycle
+
+        Returns:
+            True if the task was found and removed, False if not found
+        
+        Raises:
+            TypeError: If func is not callable
+            ValueError: If function name cannot be determined
+        """
+        if not callable(func):
+            raise TypeError("func must be callable")
+    
+        # Get function name for lookup
+        func_name = getattr(func, '__name__', None)
+        if func_name is None:
+            raise ValueError("Function name cannot be determined")
+    
+        with cls._custom_functions_lock:
+            # Check if function exists and is the same object
+            if func_name in cls._custom_functions and cls._custom_functions[func_name] is func:
+                # Remove the function from the dictionary
+                removed_func = cls._custom_functions.pop(func_name)
+                logger.debug(f"Loop task '{func_name}' removed from synchronization cycle")
+                return True
+            else:
+                logger.warning(f"Loop task '{func_name}' not found in synchronization cycle")
+                return False
+    
+    @classmethod
+    def get_loop_tasks(cls) -> Dict[str, Callable]:
+        """Get all registered loop tasks.
+
+        Returns:
+            Dictionary mapping function names to their callable objects.
+            Returns a copy to prevent external modifications.
+        """
+        with cls._custom_functions_lock:
+            # Return a copy to prevent external modifications
+            return cls._custom_functions.copy()
+
+    @classmethod
+    def clear_loop_tasks(cls) -> int:
+        """Remove all custom functions from the synchronization cycle.
+
+        Returns:
+            Number of functions that were removed
+        """
+        with cls._custom_functions_lock:
+            count = len(cls._custom_functions)
+            cls._custom_functions.clear()
+            logger.debug(f"{count} custom function(s) removed")
+            return count
+    
+    @classmethod
+    def get_loop_task_names(cls) -> list[str]:
+        """Get the names of all registered loop tasks.
+
+        Returns:
+            List of function names currently registered as loop tasks.
+        """
+        with cls._custom_functions_lock:
+            return list(cls._custom_functions.keys())
+    
+
+    @classmethod
+    def get_loop_task_count(cls) -> int:
+        """Get the number of registered loop tasks.
+
+        Returns:
+            Number of loop tasks currently registered.
+        """
+        with cls._custom_functions_lock:
+            return len(cls._custom_functions)
+    
+
+    @classmethod
+    def get_dic_io_map(cls) -> DicIOMap:
+        """Return the I/O mapping dictionary instance.
+        
+        Returns:
+            DicIOMap instance containing all current mappings
+        """
+        return cls._dictmap
+
+    @classmethod
+    def get_mod_io(cls) -> Optional[revpimodio2.RevPiModIO]:
+        """Return the RevPi ModIO instance.
+        
+        Returns:
+            RevPiModIO instance if initialized, None otherwise
+        """
+        return cls._revpi
+    
+
+class RevPiEpicsError(Exception):
+    """Base exception class for RevPi-EPICS bridge errors."""
+    pass
+
+
+class RevPiEpicsInitError(RevPiEpicsError):
+    """Exception raised during bridge initialization failures."""
+    pass
+
+
+class RevPiEpicsBuilderError(RevPiEpicsError):
+    """Exception raised during PV creation/building failures."""
+    pass
