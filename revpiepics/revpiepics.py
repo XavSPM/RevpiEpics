@@ -72,7 +72,7 @@ class RevPiEpics:
     def init(
             cls,
             *,
-            cycletime_ms: Optional[int] = 200,
+            cycletime: Optional[int] = 200,
             debug: bool = False,
             cleanup: bool = True,
             auto_prefix: bool = False
@@ -83,14 +83,14 @@ class RevPiEpics:
         Must be called before using any other methods.
 
         Args:
-            cycletime_ms: Cycle time in milliseconds (minimum 20ms)
+            cycletime: Cycle time in milliseconds (minimum 20ms)
             debug: Enable debug mode with verbose logging
             cleanup: Enable automatic cleanup on exit
             auto_prefix: Enable automatic PV prefixing based on device hierarchy
             
         Raises:
             RevPiEpicsInitError: If initialization fails
-            ValueError: If cycletime_ms is less than 20ms
+            ValueError: If cycletime is less than 20ms
         """
         with cls._lock:
             if cls._initialized:
@@ -102,10 +102,10 @@ class RevPiEpics:
                 cls._revpi = revpimodio2.RevPiModIO(autorefresh=False, debug=debug)
 
                 # Validate and set cycle time
-                if cycletime_ms is not None:
-                    if cycletime_ms < 20:
+                if cycletime is not None:
+                    if cycletime < 20:
                         raise ValueError(f"Minimum cycle time: 20 ms")
-                    cls._cycle_time_ms = cycletime_ms
+                    cls._cycle_time_ms = cycletime
 
                 cls._cleanup = cleanup
                 cls._auto_prefix = auto_prefix
