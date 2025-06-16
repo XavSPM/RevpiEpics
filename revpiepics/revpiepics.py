@@ -212,9 +212,15 @@ class RevPiEpics:
 
             # Add mapping to dictionary and return record wrapper
             if mapping:
-                cls._dictmap.add(mapping)
-                logger.debug(f"PV '{pv_name}' created for I/O '{io_name}'")
-                return mapping.get_record()
+                if isinstance(mapping, list):
+                    for m in mapping:
+                        cls._dictmap.add(m)
+                    logger.debug(f"Multiple PVs created for I/O '{io_name}' starting with '{pv_name}'")
+                    return mapping[0].get_record()
+                else:
+                    cls._dictmap.add(mapping)
+                    logger.debug(f"PV '{pv_name}' created for I/O '{io_name}'")
+                    return mapping.get_record()
             else:
                 return None
 

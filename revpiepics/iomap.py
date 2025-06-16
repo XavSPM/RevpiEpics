@@ -29,6 +29,9 @@ class IOMap:
         update_record: Flag indicating if record needs update from PV
         last_io_value: Cached last known I/O value for change detection
         last_pv_value: Cached last known PV value for change detection
+        is_aio_analog: Flag to apply soft computation for AIO
+        hw_multiplier: Hardware scaling multiplier read from process image
+        pv_multiplier: Pointer to the EPICS Record wrapper managing multiplier
     """
     # Core mapping configuration
     io_name: str                   # RevPi I/O point identifier
@@ -42,6 +45,16 @@ class IOMap:
     update_record: bool = False                   # Flag for pending record updates
     last_io_value: Optional[Any] = None           # Cached I/O value for change detection
     last_pv_value: Optional[Any] = None           # Cached PV value for change detection
+    
+    # SoftIOC scaling and conversion parameters for AIO
+    is_aio_analog: bool = False                   # Flag for AI/AO soft scaling
+    hw_multiplier: float = 1.0                    # Hardware multiplier constant
+    hw_divisor: float = 1.0                       # Hardware divisor constant
+    hw_offset: float = 0.0                        # Hardware offset constant
+    
+    pv_multiplier: Optional['RecordWrapper'] = None   # EPICS PV for variable multiplier
+    pv_divisor: Optional['RecordWrapper'] = None      # EPICS PV for variable divisor
+    pv_offset: Optional['RecordWrapper'] = None       # EPICS PV for variable offset
 
     def __post_init__(self):
         """

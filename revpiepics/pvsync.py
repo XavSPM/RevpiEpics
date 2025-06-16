@@ -135,6 +135,23 @@ class PVSyncThread(Thread):
         if mapping.update_record:
             # EPICS PV was updated - propagate to RevPi I/O
             pv_value = mapping.record.get()
+            
+            # Apply soft scaling for AIO analog outputs
+            if getattr(mapping, 'is_aio_analog', False):
+                pv_m = mapping.pv_multiplier.get() if mapping.pv_multiplier else 1.0
+                pv_d = mapping.pv_divisor.get() if mapping.pv_divisor else 1.0
+                pv_o = mapping.pv_offset.get() if mapping.pv_offset else 0.0
+                
+                # Back-calculate raw ADC from EPICS PV value
+                if pv_m != 0:
+                    raw_adc = (pv_value - pv_o) * pv_d / pv_m
+                else:
+                    raw_adc = pv_value
+                    
+                # Re-apply hardware constants to write to RevPi process image
+                if mapping.hw_divisor != 0:
+                    pv_value = (raw_adc * mapping.hw_multiplier) / mapping.hw_divisor + mapping.hw_offset
+            
             # Round float values to avoid precision issues
             pv_value = round(pv_value) if isinstance(pv_value, float) else pv_value
 
@@ -151,6 +168,23 @@ class PVSyncThread(Thread):
             # Provide feedback - read actual I/O state back to PV
             io_value = mapping.io_point.value
             pv_value = mapping.record.get()
+            
+            # Apply soft scaling backward for feedback
+            if getattr(mapping, 'is_aio_analog', False):
+                pv_m = mapping.pv_multiplier.get() if mapping.pv_multiplier else 1.0
+                pv_d = mapping.pv_divisor.get() if mapping.pv_divisor else 1.0
+                pv_o = mapping.pv_offset.get() if mapping.pv_offset else 0.0
+                
+                # Back-calculate raw ADC from hardware value
+                if mapping.hw_multiplier != 0:
+                    raw_adc = (io_value - mapping.hw_offset) * mapping.hw_divisor / mapping.hw_multiplier
+                else:
+                    raw_adc = io_value
+                    
+                # Setup theoretical PV value feedback based on soft setting
+                if pv_d != 0:
+                    io_value = (raw_adc * pv_m) / pv_d + pv_o
+            
             pv_value = round(pv_value) if isinstance(pv_value, float) else pv_value
 
             # Update PV if I/O value differs (without processing to avoid loops)
@@ -178,9 +212,25 @@ class PVSyncThread(Thread):
         # Handle different EPICS record types
         if mapping.record_type == RecordType.ANALOG:
             # Direct analog value transfer
-            if mapping.record.get() != io_value:
-                mapping.record.set(io_value)
-                logger.debug("INPUT: IO %s → PV %s = %s", mapping.io_name, mapping.pv_name, io_value)
+            computed_value = io_value
+            if getattr(mapping, 'is_aio_analog', False):
+                pv_m = mapping.pv_multiplier.get() if mapping.pv_multiplier else 1.0
+                pv_d = mapping.pv_divisor.get() if mapping.pv_divisor else 1.0
+                pv_o = mapping.pv_offset.get() if mapping.pv_offset else 0.0
+
+                # Back-calculate raw ADC from hardware value
+                if mapping.hw_multiplier != 0:
+                    raw_adc = (io_value - mapping.hw_offset) * mapping.hw_divisor / mapping.hw_multiplier
+                else:
+                    raw_adc = io_value
+                    
+                # Apply EPICS soft constants
+                if pv_d != 0:
+                    computed_value = (raw_adc * pv_m) / pv_d + pv_o
+                
+            if mapping.record.get() != computed_value:
+                mapping.record.set(computed_value)
+                logger.debug("INPUT: IO %s → PV %s = %s", mapping.io_name, mapping.pv_name, computed_value)
 
         elif mapping.record_type == RecordType.STATUS:
             # Convert to status bit representation
