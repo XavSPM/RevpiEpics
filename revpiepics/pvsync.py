@@ -135,14 +135,22 @@ class PVSyncThread(Thread):
         if mapping.update_record:
             # EPICS PV was updated - propagate to RevPi I/O
             pv_value = mapping.record.get()
-            # Round float values to avoid precision issues
-            pv_value = round(pv_value) if isinstance(pv_value, float) else pv_value
+            
+            # Apply reverse software scaling if it's an analog output
+            if mapping.record_type == RecordType.ANALOG:
+                # y = x * scale + offset  =>  x = (y - offset) / scale
+                io_target = (pv_value - mapping.offset) / mapping.scale
+            else:
+                io_target = pv_value
+
+            # Round float values to avoid precision issues for the hardware
+            io_target = round(io_target) if isinstance(io_target, float) else io_target
 
             # Only update if value has changed
-            if pv_value != mapping.io_point.value:
-                mapping.io_point.value = pv_value
-                mapping.last_io_value = pv_value
-                logger.debug("OUTPUT: PV %s → IO %s = %s",mapping.pv_name, mapping.io_name, pv_value)
+            if io_target != mapping.io_point.value:
+                mapping.io_point.value = io_target
+                mapping.last_io_value = io_target
+                logger.debug("OUTPUT: PV %s (%s) → IO %s = %s (RAW)", mapping.pv_name, pv_value, mapping.io_name, io_target)
 
             # Clear update flag
             mapping.update_record = False
@@ -150,14 +158,24 @@ class PVSyncThread(Thread):
         else:
             # Provide feedback - read actual I/O state back to PV
             io_value = mapping.io_point.value
-            pv_value = mapping.record.get()
-            pv_value = round(pv_value) if isinstance(pv_value, float) else pv_value
+            
+            # Apply software scaling if it's an analog output
+            if mapping.record_type == RecordType.ANALOG:
+                # y = x * scale + offset
+                pv_target = (io_value * mapping.scale) + mapping.offset
+            else:
+                pv_target = io_value
+
+            pv_current = mapping.record.get()
+            # Round float values to avoid precision issues
+            pv_current = round(pv_current) if isinstance(pv_current, float) else pv_current
+            pv_target_rounded = round(pv_target) if isinstance(pv_target, float) else pv_target
 
             # Update PV if I/O value differs (without processing to avoid loops)
-            if pv_value != io_value:
-                mapping.record.set(io_value, process=False)
-                mapping.last_pv_value = io_value
-                logger.debug("OUTPUT: IO %s → PV %s = %s",mapping.io_name, mapping.pv_name, pv_value)
+            if pv_current != pv_target_rounded:
+                mapping.record.set(pv_target, process=False)
+                mapping.last_pv_value = pv_target
+                logger.debug("OUTPUT: IO %s (%s) → PV %s = %s", mapping.io_name, io_value, mapping.pv_name, pv_target)
 
     def _sync_input(self, mapping: IOMap) -> None:
         """
@@ -177,10 +195,13 @@ class PVSyncThread(Thread):
 
         # Handle different EPICS record types
         if mapping.record_type == RecordType.ANALOG:
+            # Apply software scaling: y = x * scale + offset
+            pv_target = (io_value * mapping.scale) + mapping.offset
+            
             # Direct analog value transfer
-            if mapping.record.get() != io_value:
-                mapping.record.set(io_value)
-                logger.debug("INPUT: IO %s → PV %s = %s", mapping.io_name, mapping.pv_name, io_value)
+            if mapping.record.get() != pv_target:
+                mapping.record.set(pv_target)
+                logger.debug("INPUT: IO %s (%s) → PV %s = %s", mapping.io_name, io_value, mapping.pv_name, pv_target)
 
         elif mapping.record_type == RecordType.STATUS:
             # Convert to status bit representation

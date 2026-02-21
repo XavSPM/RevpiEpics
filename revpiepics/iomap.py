@@ -43,6 +43,10 @@ class IOMap:
     last_io_value: Optional[Any] = None           # Cached I/O value for change detection
     last_pv_value: Optional[Any] = None           # Cached PV value for change detection
 
+    # Software scaling factors (y = x * scale + offset)
+    scale: float = 1.0                            # Multiplier for unit conversion
+    offset: float = 0.0                           # Offset for zero-point adjustment
+
     def __post_init__(self):
         """
         Initialize cache values after dataclass construction.

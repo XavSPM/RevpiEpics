@@ -136,6 +136,8 @@ class RevPiEpics:
             pv_name: Optional[str] = None,
             DRVL: Optional[float] = None,
             DRVH: Optional[float] = None,
+            scale: float = 1.0,
+            offset: float = 0.0,
             **fields,
     ) -> Optional[pythonSoftIoc.RecordWrapper]:
         """Create an EPICS PV linked to a RevPi I/O point.
@@ -148,6 +150,8 @@ class RevPiEpics:
             pv_name: Name of the EPICS PV (defaults to io_name if not specified)
             DRVL: Drive low limit for the PV (optional)
             DRVH: Drive high limit for the PV (optional)
+            scale: Software multiplier for unit conversion (analog only)
+            offset: Software offset for zero-point adjustment (analog only)
             **fields: Additional EPICS record fields
 
         Returns:
@@ -198,6 +202,8 @@ class RevPiEpics:
                     pv_name=pv_name, 
                     DRVL=DRVL, 
                     DRVH=DRVH, 
+                    scale=scale,
+                    offset=offset,
                     **fields
                 )
             else:
@@ -207,6 +213,8 @@ class RevPiEpics:
                     pv_name=pv_name,
                     DRVL=DRVL,
                     DRVH=DRVH, 
+                    scale=scale,
+                    offset=offset,
                     **fields
                 )
 
@@ -223,7 +231,7 @@ class RevPiEpics:
             return None
 
     @classmethod
-    def _build_with_prefix(cls, build_func, io_name ,io_point, pv_name, DRVL, DRVH, **fields):
+    def _build_with_prefix(cls, build_func, io_name ,io_point, pv_name, DRVL, DRVH, scale, offset, **fields):
         """Build a PV with automatic prefix based on device hierarchy.
         
         Constructs PV names with automatic prefixes derived from RevPi core and device names.
@@ -243,7 +251,9 @@ class RevPiEpics:
             return build_func(
                 io_name=io_name,
                 io_point=io_point, pv_name=pv_name,
-                DRVL=DRVL, DRVH=DRVH, **fields
+                DRVL=DRVL, DRVH=DRVH, 
+                scale=scale, offset=offset,
+                **fields
             )
         finally:
             # Always restore original prefix

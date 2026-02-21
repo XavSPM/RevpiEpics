@@ -99,6 +99,16 @@ ao1 = RevPiEpics.builder(
     EGU="mV"
 )
 
+# Software scaling (y = x * scale + offset)
+# Example: Convert 0-10000 mV to 1-11 bar
+pression = RevPiEpics.builder(
+    io_name="InputValue_1_i06", 
+    pv_name="Pression", 
+    scale=0.001,
+    offset=1000, 
+    EGU="bar"
+)
+
 # Set limits (outputs only)
 ao2 = RevPiEpics.builder(
     io_name="OutputValue_1_i06", 
@@ -110,6 +120,25 @@ ao2 = RevPiEpics.builder(
 # Start I/O loop and IOC
 RevPiEpics.start()
 ```
+
+### ⚙️ Understanding Scaling (Hardware vs Software)
+
+#### Hardware Scaling (PiCtory)
+Revolution Pi AIO modules can perform scaling directly in their **firmware**. If you configure a `multiplier`, `divisor`, or `offset` in PiCtory:
+1. The module firmware calculates the value.
+2. `revpimodio2` reads this transformed value from the process image.
+3. **RevPiEpics** receives this already-scaled value.
+
+> 💡 **Tip**: To get the raw ADC value (0-32767), set Multiplier=1, Divisor=1, and Offset=0 in PiCtory.
+
+#### Software Scaling (RevPiEpics)
+You can apply additional scaling directly in Python using the `scale` and `offset` parameters in `RevPiEpics.builder()`. This is useful for converting electrical units (mV/µA) into physical units (bar, °C, etc.).
+
+**Formula**: $PV = (HardwareValue \times scale) + offset$
+
+*   **Inputs**: The transformation is applied before updating the EPICS PV.
+*   **Outputs**: The reverse transformation is applied before writing to the RevPi hardware.
+*   **Constraint**: These parameters are only accepted for **analog** I/Os (AIO). They are ignored for binary or status I/Os.
 
 ### Using add_loop_task
 
@@ -242,17 +271,19 @@ RevPiEpics.init(
 | `pv_name` | EPICS PV name (optional) | str | `"Temperature"` |
 | `DESC` | PV description | str | `"Room temperature"` |
 | `EGU` | Engineering units | str | `"°C"`, `"mV"`, `"bar"` |
+| `scale` | Software multiplier (analog) | float | `0.001` |
+| `offset` | Software offset (analog) | float | `10.0` |
 | `DRVL` | Low limit (outputs) | float | `0.0` |
 | `DRVH` | High limit (outputs) | float | `100.0` |
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐    ┌──────────────┐    ┌─────────────────┐
-│   Revolution Pi │    │  RevPiEpics  │    │  EPICS Network  │
-│                 │◄──►│              │◄──►│                 │
-│  I/O Modules    │    │  pythonSoftIOC│    │  Client Apps    │
-└─────────────────┘    └──────────────┘    └─────────────────┘
+┌─────────────────┐    ┌────────────────┐    ┌─────────────────┐
+│   Revolution Pi │    │  RevPiEpics    │    │  EPICS Network  │
+│                 │◄──►│                │◄──►│                 │
+│  I/O Modules    │    │  pythonSoftIOC │    │  Client Apps    │
+└─────────────────┘    └────────────────┘    └─────────────────┘
 ```
 
 ## 🔍 Troubleshooting

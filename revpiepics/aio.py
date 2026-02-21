@@ -65,6 +65,8 @@ def builder_aio(
     pv_name: str,
     DRVL=None,
     DRVH=None,
+    scale: float = 1.0,
+    offset: float = 0.0,
     **fields,
 ) -> Optional[IOMap]:
     """
@@ -87,6 +89,10 @@ def builder_aio(
         The EPICS process variable name to create.
     DRVL / DRVH : int | float | str | None
         Display limits forwarded to *builder.aOut()*, if applicable.
+    scale : float, optional
+        Software multiplier (y = x * scale + offset). Defaults to 1.0.
+    offset : float, optional
+        Software offset (y = x * scale + offset). Defaults to 0.0.
     **fields : dict
         Additional keyword arguments passed directly to *softioc.builder*.
 
@@ -97,23 +103,38 @@ def builder_aio(
     """
     # Calculate the relative offset within the AIO module
     parent_offset = io_point._parentdevice._offset
-    offset = io_point.address - parent_offset
+    offset_aio = io_point.address - parent_offset
     
     # Initialize variables to track the created record and its properties
     record = None
     record_direction = None
     record_type = None
 
+    # Check if scaling is requested for non-analog types
+    is_analog = offset_aio in ANALOG_INPUT_OFFSETS or \
+                offset_aio in TEMPERATURE_INPUT_OFFSETS or \
+                offset_aio in ANALOG_OUTPUT_OFFSETS
+
+    if not is_analog and (scale != 1.0 or offset != 0.0):
+        logger.warning(
+            "Software scaling (scale=%s, offset=%s) ignored for non-analog I/O '%s'",
+            scale, offset, io_name
+        )
+        # Reset to defaults for safety in mapping
+        scale = 1.0
+        offset = 0.0
+
     # ------------------------------------------------------------------
     # Analog inputs
     # ------------------------------------------------------------------
-    if offset in ANALOG_INPUT_OFFSETS:
+    if offset_aio in ANALOG_INPUT_OFFSETS:
         # Create analog input record with current IO value as initial value
-        record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
+        pv_initial = (io_point.value * scale) + offset
+        record = builder.aIn(pv_name, initial_value=pv_initial, **fields)
         record_direction = RecordDirection.INPUT
         record_type = RecordType.ANALOG
 
-    elif offset in ANALOG_INPUT_STATUS_OFFSETS:
+    elif offset_aio in ANALOG_INPUT_STATUS_OFFSETS:
         # Create multi-bit binary input for analog input status
         record = builder.mbbIn(
             pv_name,
@@ -129,13 +150,14 @@ def builder_aio(
     # ------------------------------------------------------------------
     # Temperature inputs
     # ------------------------------------------------------------------
-    elif offset in TEMPERATURE_INPUT_OFFSETS:
+    elif offset_aio in TEMPERATURE_INPUT_OFFSETS:
         # Create analog input record for temperature measurement
-        record = builder.aIn(pv_name, initial_value=io_point.value, **fields)
+        pv_initial = (io_point.value * scale) + offset
+        record = builder.aIn(pv_name, initial_value=pv_initial, **fields)
         record_direction = RecordDirection.INPUT
         record_type = RecordType.ANALOG
 
-    elif offset in TEMPERATURE_INPUT_STATUS_OFFSETS:
+    elif offset_aio in TEMPERATURE_INPUT_STATUS_OFFSETS:
         # Create multi-bit binary input for temperature sensor status
         record = builder.mbbIn(
             pv_name,
@@ -146,12 +168,12 @@ def builder_aio(
             **fields,
         )
         record_direction = RecordDirection.INPUT
-        record_type = RecordType.ANALOG
+        record_type = RecordType.STATUS
 
     # ------------------------------------------------------------------
     # Analog outputs
     # ------------------------------------------------------------------
-    elif offset in ANALOG_OUTPUT_STATUS_OFFSETS:
+    elif offset_aio in ANALOG_OUTPUT_STATUS_OFFSETS:
         # Create multi-bit binary input for analog output status monitoring
         record = builder.mbbIn(
             pv_name,
@@ -170,7 +192,7 @@ def builder_aio(
         record_direction = RecordDirection.INPUT
         record_type = RecordType.STATUS
 
-    elif offset in ANALOG_OUTPUT_OFFSETS:
+    elif offset_aio in ANALOG_OUTPUT_OFFSETS:
         # Create analog output record with proper scaling and range validation
         from .revpiepics import RevPiEpics
         revpi = RevPiEpics.get_mod_io()
@@ -179,7 +201,7 @@ def builder_aio(
             logger.error("Cannot access RevPi IOs for analog output processing.")
         else:
             # Read output configuration parameters from the device
-            out_range, out_multiplier, out_divisor, out_offset = _read_analog_out_params(offset, parent_offset)
+            out_range, out_multiplier, out_divisor, out_offset = _read_analog_out_params(offset_aio, parent_offset)
 
             # Validate that the output channel is properly configured
             if out_range is not None and out_range > 0:
@@ -206,11 +228,17 @@ def builder_aio(
                         value_max = float(DRVH) if DRVH is not None else ((range_max * out_multiplier) / out_divisor) + out_offset
                     except (TypeError, ValueError):
                         value_max = ((range_max * out_multiplier) / out_divisor) + out_offset
+                    
+                    # Apply Software Scaling to limits if provided
+                    # Hardware range_min -> software value_min
+                    value_min = (value_min * scale) + offset
+                    value_max = (value_max * scale) + offset
 
                     # Create analog output record with proper limits and write callback
+                    pv_initial = (io_point.value * scale) + offset
                     record = builder.aOut(
                         pv_name,
-                        initial_value=io_point.value,
+                        initial_value=pv_initial,
                         on_update_name=record_write,  # Callback for writing to hardware
                         DRVH=value_max,               # High operating range
                         DRVL=value_min,               # Low operating range
@@ -231,7 +259,9 @@ def builder_aio(
                     io_point=io_point,
                     record=record,
                     direction=record_direction,
-                    record_type=record_type
+                    record_type=record_type,
+                    scale=scale,
+                    offset=offset
                 )
         return mapping
     else:
