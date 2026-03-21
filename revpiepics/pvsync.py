@@ -44,6 +44,7 @@ class PVSyncThread(Thread):
         Continuously synchronizes I/O data between RevPi and EPICS at the
         specified cycle time. Handles timing control and error recovery.
         """
+        self._stop_event.clear()  # Clear any previous stop signal
         logger.info("Synchronization thread started (cycle: %s ms)", self._cycle_time_ms)
         cycle_time_s = self._cycle_time_ms / 1000.0  # Convert to seconds for timing
 
