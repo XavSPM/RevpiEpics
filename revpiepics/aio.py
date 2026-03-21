@@ -421,10 +421,10 @@ def _read_analog_in_params(offset: int, parent_offset: int) -> Tuple[int | None,
     Read multiplier, divisor, and offset parameters for a given analog input channel.
     """
     offset_map = {
-        0: {'multiplier': 33, 'divisor': 35, 'offset': 37},
-        2: {'multiplier': 43, 'divisor': 45, 'offset': 47},
-        4: {'multiplier': 53, 'divisor': 55, 'offset': 57},
-        6: {'multiplier': 63, 'divisor': 65, 'offset': 67},
+        0: {'multiplier': 25, 'divisor': 27, 'offset': 29},
+        2: {'multiplier': 32, 'divisor': 34, 'offset': 36},
+        4: {'multiplier': 39, 'divisor': 41, 'offset': 43},
+        6: {'multiplier': 46, 'divisor': 48, 'offset': 50},
     }
     
     map_entry = offset_map.get(offset)
@@ -443,8 +443,8 @@ def _read_temp_in_params(offset: int, parent_offset: int) -> Tuple[int | None, i
     Read multiplier, divisor, and offset parameters for a given temperature input channel.
     """
     offset_map = {
-        12: {'multiplier': 93, 'divisor': 95, 'offset': 97},
-        14: {'multiplier': 103, 'divisor': 105, 'offset': 107},
+        12: {'multiplier': 55, 'divisor': 57, 'offset': 59},
+        14: {'multiplier': 63, 'divisor': 65, 'offset': 67},
     }
     
     map_entry = offset_map.get(offset)
