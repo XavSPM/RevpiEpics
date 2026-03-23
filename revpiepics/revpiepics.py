@@ -39,14 +39,14 @@ class ColorLogFormatter(logging.Formatter):
     def __init__(self, debug: bool):
         super().__init__()
         fmt = (
-            "%(asctime)s [{COLOR}%(levelname)s{RESET}] %(name)s: %(message)s"
+            "[{COLOR}%(levelname)s{RESET}] %(asctime)s %(name)s: %(message)s"
             if debug else "[{COLOR}%(levelname)s{RESET}]: %(message)s"
         )
         self.formats = {
-            level: logging.Formatter(fmt.format(COLOR=color, RESET=self.RESET))
+            level: logging.Formatter(fmt.format(COLOR=color, RESET=self.RESET), datefmt="%Y-%m-%d %H:%M:%S")
             for level, color in self.COLORS.items()
         }
-        self.default_fmt = logging.Formatter(fmt.format(COLOR="", RESET=""))
+        self.default_fmt = logging.Formatter(fmt.format(COLOR="", RESET=""), datefmt="%Y-%m-%d %H:%M:%S")
         
     def format(self, record):
         return self.formats.get(record.levelno, self.default_fmt).format(record)
