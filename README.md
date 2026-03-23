@@ -80,7 +80,12 @@ from softioc import builder
 builder.SetDeviceName("TEST")
 
 # Initialization (debug and cycletime are optional)
-RevPiEpics.init(debug=True, cycletime=200)
+RevPiEpics.init(
+    debug=True, 
+    cycletime=200, 
+    autosave=True, 
+    autosave_dir="/tmp"
+)
 
 # Create PVs with automatic type detection
 ai1 = RevPiEpics.builder("OutputStatus_2_i06")  # PV: TEST:OutputStatus_2_i06
@@ -135,8 +140,18 @@ builder.SetDeviceName("ACCELERATOR")
 # auto_prefix allows using names given to cards by PiCtory
 RevPiEpics.init(debug=True, cycletime=100, auto_prefix=True)
 
-temp_sensor = RevPiEpics.builder("InputValue_1_i06", EGU="°C") 
-pump_speed = RevPiEpics.builder("OutputValue_1_i06", EGU="%", DRVL=0, DRVH=100)
+temp_sensor = RevPiEpics.builder(
+    "InputValue_1_i06", 
+    EGU="°C", 
+    initial_offset=-5.0  # Optional initial offset override
+) 
+pump_speed = RevPiEpics.builder(
+    "OutputValue_1_i06", 
+    EGU="%", 
+    DRVL=0, 
+    DRVH=100,
+    autosave_params=True # Implicitly saves both multiplier and offset
+)
 
 # Using EPICS records
 def temperature_control():
@@ -236,13 +251,15 @@ RevPiEpics.start(dispatcher=dispatcher)
 
 ```python
 RevPiEpics.init(
-    debug=True,        # Enable debug messages
-    cycletime=100,     # Update cycle in ms (default: 200ms)
-    auto_prefix=True,  # Use PiCtory names for prefixes
-    cleanup=True,      # Enable automatic cleanup on exit. 
-                       # Resets the default input/output value (PiControl) before exiting
-    autosave=True,     # Enable global state autosave
+    debug=True,          # Enable debug messages
+    cycletime=100,       # Update cycle in ms (default: 200ms)
+    auto_prefix=True,    # Use PiCtory names for prefixes
+    cleanup=True,        # Enable automatic cleanup on exit. 
+                         # Resets the default input/output value (PiControl) before exiting
+    autosave=True,       # Enable global state autosave
     autosave_dir="/tmp", # Directory to store the softsav backup file
+    autosave_name="my_ioc", # Custom name for the .softsav file
+    autosave_period=10.0 # Autosave frequency in seconds
 )
 ```
 
