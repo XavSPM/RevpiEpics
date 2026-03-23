@@ -24,6 +24,33 @@ from epicsdbbuilder.recordnames import SimpleRecordNames
 
 logger = logging.getLogger(__name__)
 
+class ColorLogFormatter(logging.Formatter):
+    """Custom format logger bringing colors to the console."""
+    
+    COLORS = {
+        logging.DEBUG: "\033[36m",     # Cyan
+        logging.INFO: "\033[33m",      # Yellow
+        logging.WARNING: "\033[35m",   # Magenta
+        logging.ERROR: "\033[31m",     # Red
+        logging.CRITICAL: "\033[1;31m" # Bold Red
+    }
+    RESET = "\033[0m"
+
+    def __init__(self, debug: bool):
+        super().__init__()
+        fmt = (
+            "%(asctime)s [{COLOR}%(levelname)s{RESET}] %(name)s: %(message)s"
+            if debug else "[{COLOR}%(levelname)s{RESET}]: %(message)s"
+        )
+        self.formats = {
+            level: logging.Formatter(fmt.format(COLOR=color, RESET=self.RESET))
+            for level, color in self.COLORS.items()
+        }
+        self.default_fmt = logging.Formatter(fmt.format(COLOR="", RESET=""))
+        
+    def format(self, record):
+        return self.formats.get(record.levelno, self.default_fmt).format(record)
+
 class RevPiEpics:
     """Bridge between RevPi and EPICS with bidirectional synchronization.
     
@@ -129,11 +156,18 @@ class RevPiEpics:
 
                 # Configure logging based on debug mode
                 log_level = logging.DEBUG if debug else logging.INFO
-                log_format = (
-                    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-                    if debug else "[%(levelname)s]: %(message)s"
-                )
-                logging.basicConfig(level=log_level, format=log_format)
+                
+                # Setup base root logger
+                root_logger = logging.getLogger()
+                root_logger.setLevel(log_level)
+                
+                # Clear all existing handlers if re-initializing
+                if root_logger.hasHandlers():
+                    root_logger.handlers.clear()
+                    
+                ch = logging.StreamHandler()
+                ch.setFormatter(ColorLogFormatter(debug=debug))
+                root_logger.addHandler(ch)
 
                 # Initialize PV synchronization thread
                 cls._pv_sync = PVSyncThread(cls)
@@ -334,7 +368,7 @@ class RevPiEpics:
                     )
                     logger.debug(f"Autosave enabled in {cls._autosave_dir}")
                 else:
-                    logger.warning("Autosave est activé (autosave=True) mais 'autosave_dir' est manquant ! La sauvegarde ne démarrera pas.")
+                    logger.warning("Autosave is enabled (autosave=True) but 'autosave_dir' is missing! The backup will not start.")
 
             # Load EPICS database with all created PVs
             builder.LoadDatabase()
