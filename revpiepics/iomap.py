@@ -29,6 +29,9 @@ class IOMap:
         update_record: Flag indicating if record needs update from PV
         last_io_value: Cached last known I/O value for change detection
         last_pv_value: Cached last known PV value for change detection
+        is_aio_analog: Flag to apply soft computation for AIO
+        hw_multiplier: Hardware scaling multiplier read from process image
+        pv_multiplier: Pointer to the EPICS Record wrapper managing multiplier
     """
     # Core mapping configuration
     io_name: str                   # RevPi I/O point identifier
@@ -42,7 +45,7 @@ class IOMap:
     update_record: bool = False                   # Flag for pending record updates
     last_io_value: Optional[Any] = None           # Cached I/O value for change detection
     last_pv_value: Optional[Any] = None           # Cached PV value for change detection
-
+    
     def __post_init__(self):
         """
         Initialize cache values after dataclass construction.
@@ -76,6 +79,32 @@ class IOMap:
             IntIO: The RevPi I/O point for hardware access
         """
         return self.io_point
+
+@dataclass
+class AnalogIOMap(IOMap):
+    """
+    Mapping specialized for Analog I/O points (AIO).
+    
+    Includes hardware scaling constants and EPICS soft scaling parameters.
+    """
+    # SoftIOC scaling and conversion parameters for AIO
+    hw_multiplier: float = 1.0                    # Hardware multiplier constant
+    hw_divisor: float = 1.0                       # Hardware divisor constant
+    hw_offset: float = 0.0                        # Hardware offset constant
+    
+    pv_multiplier: Optional['RecordWrapper'] = None   # EPICS PV for variable multiplier (float)
+    pv_offset: Optional['RecordWrapper'] = None       # EPICS PV for variable offset (float)
+
+    last_pv_multiplier: Optional[float] = None        # Cached multiplier for change detection
+    last_pv_offset: Optional[float] = None            # Cached offset for change detection
+
+    def __post_init__(self):
+        super().__post_init__()
+        try:
+            self.last_pv_multiplier = self.pv_multiplier.get() if self.pv_multiplier else 1.0
+            self.last_pv_offset = self.pv_offset.get() if self.pv_offset else 0.0
+        except Exception as e:
+            logger.warning("Erreur lors de l'initialisation du cache analogique pour %s: %s", self.io_name, e)
 
 @dataclass
 class DicIOMap:

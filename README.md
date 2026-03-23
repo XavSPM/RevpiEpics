@@ -80,7 +80,12 @@ from softioc import builder
 builder.SetDeviceName("TEST")
 
 # Initialization (debug and cycletime are optional)
-RevPiEpics.init(debug=True, cycletime=200)
+RevPiEpics.init(
+    debug=True, 
+    cycletime=200, 
+    autosave=True, 
+    autosave_dir="/tmp"
+)
 
 # Create PVs with automatic type detection
 ai1 = RevPiEpics.builder("OutputStatus_2_i06")  # PV: TEST:OutputStatus_2_i06
@@ -88,8 +93,18 @@ ai2 = RevPiEpics.builder("OutputStatus_1_i06", "Out1Status")  # PV: TEST:Out1Sta
 
 # Examples with different I/O types
 ai3 = RevPiEpics.builder("InputStatus_1_i06")   # Input Status
-ai4 = RevPiEpics.builder(io_name="InputValue_2_i01", pv_name="IN2_1")    # Analog input / PV: TEST:IN2_1
-ai5 = RevPiEpics.builder("InputStatus_1_i01")
+
+# Analog input with autosave configuration
+ai4 = RevPiEpics.builder(
+    io_name="InputValue_2_i01", 
+    pv_name="IN2_1",
+    autosave_multiplier=True,  # Automatically save the multiplier to file
+    autosave_offset=True       # Automatically save the offset to file
+)
+
+# You can manipulate the soft scaling PVs directly from Python
+ai4.multiplier.set(1.5)
+print(f"Custom offset: {ai4.offset.get()}")
 
 # Advanced configuration with metadata
 ao1 = RevPiEpics.builder(
@@ -125,8 +140,18 @@ builder.SetDeviceName("ACCELERATOR")
 # auto_prefix allows using names given to cards by PiCtory
 RevPiEpics.init(debug=True, cycletime=100, auto_prefix=True)
 
-temp_sensor = RevPiEpics.builder("InputValue_1_i06", EGU="°C") 
-pump_speed = RevPiEpics.builder("OutputValue_1_i06", EGU="%", DRVL=0, DRVH=100)
+temp_sensor = RevPiEpics.builder(
+    "InputValue_1_i06", 
+    EGU="°C", 
+    initial_offset=-5.0  # Optional initial offset override
+) 
+pump_speed = RevPiEpics.builder(
+    "OutputValue_1_i06", 
+    EGU="%", 
+    DRVL=0, 
+    DRVH=100,
+    autosave_params=True # Implicitly saves both multiplier and offset
+)
 
 # Using EPICS records
 def temperature_control():
@@ -225,16 +250,25 @@ RevPiEpics.start(dispatcher=dispatcher)
 ### Initialization Parameters
 
 ```python
-RevPiEpics.init(
-    debug=True,        # Enable debug messages
-    cycletime=100,     # Update cycle in ms (default: 200ms)
-    auto_prefix=True   # Use PiCtory names for prefixes
-    cleanup=True       # Enable automatic cleanup on exit. 
-                       # Resets the default input/output value (PiControl) before exiting
-)
+RevPiEpics.init()
 ```
 
+| Parameter | Description | Type | Default |
+|-----------|-------------|------|---------|
+| `cycletime` | Update cycle in milliseconds (min 20ms) | int | `200` |
+| `debug` | Enable debug messages and colored logs | bool | `False` |
+| `cleanup` | Enable PiControl cleanup on application exit. Resets the default input/output value (PiControl) before exiting | bool | `True` |
+| `auto_prefix` | Use PiCtory parent devices for PV prefixes | bool | `False` |
+| `autosave` | Enable `pythonSoftIOC` global state saving | bool | `False` |
+| `autosave_dir` | Directory to store `.softsav` backup files | str | `None` |
+| `autosave_name` | Name prefix for the generated save file | str | `"revpiepics"` |
+| `autosave_period` | Frequency of autosave in seconds | float | `30.0` |
+
 ### PV Configuration Options
+
+```python
+RevPiEpics.builder()
+```
 
 | Parameter | Description | Type | Example |
 |-----------|-------------|------|---------|
@@ -244,15 +278,21 @@ RevPiEpics.init(
 | `EGU` | Engineering units | str | `"°C"`, `"mV"`, `"bar"` |
 | `DRVL` | Low limit (outputs) | float | `0.0` |
 | `DRVH` | High limit (outputs) | float | `100.0` |
+| `autosave_multiplier` | Save AIO multiplier to disk | bool | `True` |
+| `autosave_offset` | Save AIO offset to disk | bool | `True` |
+| `autosave_params` | Save both AIO multiplier & offset | bool | `True` |
+| `autosave` | Native PV field autosave | bool/list | `True`, `["PREC", "EGU"]` |
+| `initial_multiplier` | Override default AIO scale | float | `1.5` |
+| `initial_offset` | Override default AIO offset | float | `20.0` |
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐    ┌──────────────┐    ┌─────────────────┐
-│   Revolution Pi │    │  RevPiEpics  │    │  EPICS Network  │
-│                 │◄──►│              │◄──►│                 │
-│  I/O Modules    │    │  pythonSoftIOC│    │  Client Apps    │
-└─────────────────┘    └──────────────┘    └─────────────────┘
+┌─────────────────┐    ┌────────────────┐    ┌─────────────────┐
+│   Revolution Pi │    │  RevPiEpics    │    │  EPICS Network  │
+│                 │◄──►│                │◄──►│                 │
+│  I/O Modules    │    │  pythonSoftIOC │    │  Client Apps    │
+└─────────────────┘    └────────────────┘    └─────────────────┘
 ```
 
 ## 🔍 Troubleshooting

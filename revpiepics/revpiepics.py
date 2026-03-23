@@ -18,11 +18,38 @@ from .pvsync import PVSyncThread
 from .iomap import DicIOMap, IOMap
 
 import revpimodio2
-from softioc import builder, pythonSoftIoc, softioc
+from softioc import builder, pythonSoftIoc, softioc, autosave
 from softioc.asyncio_dispatcher import AsyncioDispatcher
 from epicsdbbuilder.recordnames import SimpleRecordNames
 
 logger = logging.getLogger(__name__)
+
+class ColorLogFormatter(logging.Formatter):
+    """Custom format logger bringing colors to the console."""
+    
+    COLORS = {
+        logging.DEBUG: "\033[36m",     # Cyan
+        logging.INFO: "\033[33m",      # Yellow
+        logging.WARNING: "\033[35m",   # Magenta
+        logging.ERROR: "\033[31m",     # Red
+        logging.CRITICAL: "\033[1;31m" # Bold Red
+    }
+    RESET = "\033[0m"
+
+    def __init__(self, debug: bool):
+        super().__init__()
+        fmt = (
+            "[{COLOR}%(levelname)s{RESET}] %(asctime)s %(name)s: %(message)s"
+            if debug else "[{COLOR}%(levelname)s{RESET}]: %(message)s"
+        )
+        self.formats = {
+            level: logging.Formatter(fmt.format(COLOR=color, RESET=self.RESET), datefmt="%Y-%m-%d %H:%M:%S")
+            for level, color in self.COLORS.items()
+        }
+        self.default_fmt = logging.Formatter(fmt.format(COLOR="", RESET=""), datefmt="%Y-%m-%d %H:%M:%S")
+        
+    def format(self, record):
+        return self.formats.get(record.levelno, self.default_fmt).format(record)
 
 class RevPiEpics:
     """Bridge between RevPi and EPICS with bidirectional synchronization.
@@ -45,6 +72,11 @@ class RevPiEpics:
     _auto_prefix = False
     # Cycle time in milliseconds
     _cycle_time_ms = None
+    # Autosave configuration
+    _autosave: bool = False
+    _autosave_dir: Optional[str] = None
+    _autosave_name: str = "revpiepics"
+    _autosave_period: float = 30.0
     # PV synchronization thread
     _pv_sync: Optional["PVSyncThread"] = None
     # Thread synchronization lock
@@ -75,7 +107,11 @@ class RevPiEpics:
             cycletime: Optional[int] = 200,
             debug: bool = False,
             cleanup: bool = True,
-            auto_prefix: bool = False
+            auto_prefix: bool = False,
+            autosave: bool = False,
+            autosave_dir: Optional[str] = None,
+            autosave_name: str = "revpiepics",
+            autosave_period: float = 30.0
     ) -> None:
         """Initialize the RevPi-EPICS bridge.
 
@@ -87,6 +123,10 @@ class RevPiEpics:
             debug: Enable debug mode with verbose logging
             cleanup: Enable automatic cleanup on exit
             auto_prefix: Enable automatic PV prefixing based on device hierarchy
+            autosave: Global flag to enable or disable the autosave functionality
+            autosave_dir: Directory to save soft PV configuration (e.g. for scaling parameters)
+            autosave_name: Name of the generated autosave file
+            autosave_period: How frequently (in seconds) the autosave file is recorded
             
         Raises:
             RevPiEpicsInitError: If initialization fails
@@ -109,14 +149,25 @@ class RevPiEpics:
 
                 cls._cleanup = cleanup
                 cls._auto_prefix = auto_prefix
+                cls._autosave = autosave
+                cls._autosave_dir = autosave_dir
+                cls._autosave_name = autosave_name
+                cls._autosave_period = autosave_period
 
                 # Configure logging based on debug mode
                 log_level = logging.DEBUG if debug else logging.INFO
-                log_format = (
-                    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-                    if debug else "[%(levelname)s]: %(message)s"
-                )
-                logging.basicConfig(level=log_level, format=log_format)
+                
+                # Setup base root logger
+                root_logger = logging.getLogger()
+                root_logger.setLevel(log_level)
+                
+                # Clear all existing handlers if re-initializing
+                if root_logger.hasHandlers():
+                    root_logger.handlers.clear()
+                    
+                ch = logging.StreamHandler()
+                ch.setFormatter(ColorLogFormatter(debug=debug))
+                root_logger.addHandler(ch)
 
                 # Initialize PV synchronization thread
                 cls._pv_sync = PVSyncThread(cls)
@@ -185,9 +236,32 @@ class RevPiEpics:
                     f"No builder for product type {product_type}"
                 )
 
+            # Warn if user provided scaling autosave to non-AIO module
+            if product_type != revpimodio2.pictory.ProductType.AIO:
+                au_p = fields.pop('autosave_params', False)
+                au_m = fields.pop('autosave_multiplier', False)
+                au_o = fields.pop('autosave_offset', False)
+                init_m = fields.pop('initial_multiplier', None)
+                init_o = fields.pop('initial_offset', None)
+                
+                if au_p or au_m or au_o or init_m is not None or init_o is not None:
+                    logger.warning(f"Soft scaling parameters are only applicable to Analog endpoints (ignored for '{io_name}')")
+
             # Use I/O name as PV name if not specified
             if pv_name is None:
                 pv_name = io_name
+
+            # Warn if user provided any autosave config while autosave is disabled globally
+            if not cls._autosave:
+                au_base = fields.get('autosave', False)
+                au_p = fields.get('autosave_params', False)
+                au_m = fields.get('autosave_multiplier', False)
+                au_o = fields.get('autosave_offset', False)
+                if any([au_base, au_p, au_m, au_o]):
+                    logger.warning(
+                        f"Autosave is disabled in RevPiEpics.init(), "
+                        f"autosave parameters for PV '{pv_name}' will be ignored."
+                    )
 
             # Build with or without automatic prefixing
             if cls._auto_prefix:
@@ -212,9 +286,27 @@ class RevPiEpics:
 
             # Add mapping to dictionary and return record wrapper
             if mapping:
-                cls._dictmap.add(mapping)
-                logger.debug(f"PV '{pv_name}' created for I/O '{io_name}'")
-                return mapping.get_record()
+                if isinstance(mapping, list):
+                    for m in mapping:
+                        cls._dictmap.add(m)
+                    logger.debug(f"Multiple PVs created for I/O '{io_name}' starting with '{pv_name}'")
+                    
+                    record = mapping[0].get_record()
+                    if hasattr(mapping[0], 'pv_multiplier') and mapping[0].pv_multiplier is not None:
+                        object.__setattr__(record, 'multiplier', mapping[0].pv_multiplier)
+                    if hasattr(mapping[0], 'pv_offset') and mapping[0].pv_offset is not None:
+                        object.__setattr__(record, 'offset', mapping[0].pv_offset)
+                    return record
+                else:
+                    cls._dictmap.add(mapping)
+                    logger.debug(f"PV '{pv_name}' created for I/O '{io_name}'")
+                    
+                    record = mapping.get_record()
+                    if hasattr(mapping, 'pv_multiplier') and mapping.pv_multiplier is not None:
+                        object.__setattr__(record, 'multiplier', mapping.pv_multiplier)
+                    if hasattr(mapping, 'pv_offset') and mapping.pv_offset is not None:
+                        object.__setattr__(record, 'offset', mapping.pv_offset)
+                    return record
             else:
                 return None
 
@@ -269,6 +361,18 @@ class RevPiEpics:
             RuntimeError: If synchronization thread fails to initialize
         """
         try:
+            # Configure autosave if globally enabled
+            if cls._autosave:
+                if cls._autosave_dir:
+                    autosave.configure(
+                        directory=cls._autosave_dir,
+                        name=cls._autosave_name,
+                        save_period=cls._autosave_period
+                    )
+                    logger.debug(f"Autosave enabled in {cls._autosave_dir}")
+                else:
+                    logger.warning("Autosave is enabled (autosave=True) but 'autosave_dir' is missing! The backup will not start.")
+
             # Load EPICS database with all created PVs
             builder.LoadDatabase()
 

@@ -27,7 +27,7 @@ from softioc import builder
 
 import logging
 from .recod import RecordDirection, RecordType
-from .iomap import IOMap
+from .iomap import IOMap, AnalogIOMap
 from .utils import status_bit_length, record_write, get_io_offset_value
 
 from revpimodio2.pictory import ProductType, AIO
@@ -98,6 +98,27 @@ def builder_aio(
     # Calculate the relative offset within the AIO module
     parent_offset = io_point._parentdevice._offset
     offset = io_point.address - parent_offset
+    # Extract custom scaling autosave fields, removing them from generic **fields
+    autosave_params = fields.pop('autosave_params', False)
+    autosave_offset = fields.pop('autosave_offset', autosave_params)
+    autosave_multiplier = fields.pop('autosave_multiplier', autosave_params)
+    
+    # Extract custom initial scaling values
+    initial_multiplier_override = fields.pop('initial_multiplier', None)
+    if initial_multiplier_override is not None:
+        try:
+            initial_multiplier_override = float(initial_multiplier_override)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid initial_multiplier '{initial_multiplier_override}' for '{io_name}', must be numeric. Ignoring.")
+            initial_multiplier_override = None
+
+    initial_offset_override = fields.pop('initial_offset', None)
+    if initial_offset_override is not None:
+        try:
+            initial_offset_override = float(initial_offset_override)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid initial_offset '{initial_offset_override}' for '{io_name}', must be numeric. Ignoring.")
+            initial_offset_override = None
     
     # Initialize variables to track the created record and its properties
     record = None
@@ -114,14 +135,14 @@ def builder_aio(
         record_type = RecordType.ANALOG
 
     elif offset in ANALOG_INPUT_STATUS_OFFSETS:
-        # Create multi-bit binary input for analog input status
+        # Create mbbi record for analog input status
         record = builder.mbbIn(
             pv_name,
-            "OK",                          # State 0: Normal operation
-            ("Below the range", "MAJOR"),  # State 1: Under-range alarm
-            ("Above the range", "MAJOR"),  # State 2: Over-range alarm
+            "OK",
+            ("Below the range", "MAJOR"),
+            ("Above the range", "MAJOR"),
             initial_value=status_bit_length(io_point.value),
-            **fields,
+            **fields
         )
         record_direction = RecordDirection.INPUT
         record_type = RecordType.STATUS
@@ -136,36 +157,36 @@ def builder_aio(
         record_type = RecordType.ANALOG
 
     elif offset in TEMPERATURE_INPUT_STATUS_OFFSETS:
-        # Create multi-bit binary input for temperature sensor status
+        # Create mbbi record for temperature input status
         record = builder.mbbIn(
             pv_name,
-            "OK",                                   # State 0: Normal operation
-            ("T<-200°C / short circuit", "MAJOR"),  # State 1: Sensor short circuit
-            ("T>850°C / not connected", "MAJOR"),   # State 2: Sensor disconnected
+            "OK",
+            ("T<-200°C / short circuit", "MAJOR"),
+            ("T>850°C / not connected", "MAJOR"),
             initial_value=status_bit_length(io_point.value),
-            **fields,
+            **fields
         )
         record_direction = RecordDirection.INPUT
-        record_type = RecordType.ANALOG
+        record_type = RecordType.STATUS
 
     # ------------------------------------------------------------------
     # Analog outputs
     # ------------------------------------------------------------------
     elif offset in ANALOG_OUTPUT_STATUS_OFFSETS:
-        # Create multi-bit binary input for analog output status monitoring
+        # Create mbbi record for analog output status
         record = builder.mbbIn(
             pv_name,
-            "OK",                                   # State 0: Normal operation
-            ("Temperature error", "MAJOR"),         # State 1: Thermal protection
-            ("Open load", "MAJOR"),                 # State 2: Load disconnected
-            ("Internal error", "MAJOR"),            # State 3: Hardware malfunction
-            ("Range error", "MAJOR"),               # State 4: Output value out of range
-            ("Internal purposes", "MAJOR"),         # State 5: Reserved for internal use
-            ("Supply voltage < 10.2V", "MAJOR"),    # State 6: Under-voltage condition
-            ("Supply voltage > 28.8V", "MAJOR"),    # State 7: Over-voltage condition
-            ("Connection timeout", "MAJOR"),        # State 8: Communication timeout
+            "OK",
+            ("Temperature error", "MAJOR"),
+            ("Open load", "MAJOR"),
+            ("Internal error", "MAJOR"),
+            ("Range error", "MAJOR"),
+            ("Internal purposes", "MAJOR"),
+            ("Supply voltage < 10.2V", "MAJOR"),
+            ("Supply voltage > 28.8V", "MAJOR"),
+            ("Connection timeout", "MAJOR"),
             initial_value=status_bit_length(io_point.value),
-            **fields,
+            **fields
         )
         record_direction = RecordDirection.INPUT
         record_type = RecordType.STATUS
@@ -224,16 +245,79 @@ def builder_aio(
                 logger.error("Analog output '%s' is disabled or has invalid parameters", io_point.name)
     
     # Create and return the IO mapping if record creation was successful
-    if record and record_direction and record_type : 
-        mapping = IOMap(
-                    io_name=io_name,
-                    pv_name=pv_name,
-                    io_point=io_point,
-                    record=record,
-                    direction=record_direction,
-                    record_type=record_type
-                )
-        return mapping
+    if record and record_direction and record_type: 
+        from .revpiepics import RevPiEpics
+        revpi = RevPiEpics.get_mod_io()
+
+        is_aio_analog = False
+        hw_m, hw_d, hw_o = 1.0, 1.0, 0.0
+        pv_m, pv_o = None, None
+        
+        if offset in ANALOG_INPUT_OFFSETS + TEMPERATURE_INPUT_OFFSETS + ANALOG_OUTPUT_OFFSETS:
+            is_aio_analog = True
+            
+            # Extract parameters based on input/output type
+            _m, _d, _o = None, None, None
+            
+            if offset in ANALOG_INPUT_OFFSETS:
+                _m, _d, _o = _read_analog_in_params(offset, parent_offset)
+            elif offset in TEMPERATURE_INPUT_OFFSETS:
+                _m, _d, _o = _read_temp_in_params(offset, parent_offset)
+            else: # ANALOG_OUTPUT_OFFSETS
+                # output params returns `_range` as 1st element
+                _range, _m, _d, _o = _read_analog_out_params(offset, parent_offset)
+            
+            if _m is not None and _d is not None and _o is not None:
+                hw_m, hw_d, hw_o = float(_m), float(_d), float(_o)
+
+            # Create Soft PVs for parameters as Analog (Float)
+            initial_m = float(hw_m) / float(hw_d) if hw_d != 0 else float(hw_m)
+            if initial_multiplier_override is not None:
+                initial_m = float(initial_multiplier_override)
+                
+            pv_m = builder.aOut(
+                f"{pv_name}:MULTIPLIER", 
+                initial_value=initial_m,
+                autosave=autosave_multiplier
+            )
+            
+            initial_o = float(hw_o)
+            if initial_offset_override is not None:
+                initial_o = float(initial_offset_override)
+                
+            pv_o = builder.aOut(
+                f"{pv_name}:OFFSET", 
+                initial_value=initial_o,
+                autosave=autosave_offset
+            )
+
+        # Construct primary mapping
+        if is_aio_analog:
+            main_mapping = AnalogIOMap(
+                io_name=io_name,
+                pv_name=pv_name,
+                io_point=io_point,
+                record=record,
+                direction=record_direction,
+                record_type=record_type,
+                hw_multiplier=hw_m,
+                hw_divisor=hw_d,
+                hw_offset=hw_o,
+                pv_multiplier=pv_m,
+                pv_offset=pv_o
+            )
+        else:
+            main_mapping = IOMap(
+                io_name=io_name,
+                pv_name=pv_name,
+                io_point=io_point,
+                record=record,
+                direction=record_direction,
+                record_type=record_type
+            )
+        
+        # Return the generated mapping
+        return main_mapping
     else:
         return None
 
@@ -353,6 +437,48 @@ def _read_analog_out_params(offset: int, parent_offset: int) -> Tuple[int | None
     # Read the actual parameter values from the process image
     return (
         get_io_offset_value(parent_offset + map_entry['range']),
+        get_io_offset_value(parent_offset + map_entry['multiplier']),
+        get_io_offset_value(parent_offset + map_entry['divisor']),
+        get_io_offset_value(parent_offset + map_entry['offset']),
+    )
+
+def _read_analog_in_params(offset: int, parent_offset: int) -> Tuple[int | None, int | None, int | None]:
+    """
+    Read multiplier, divisor, and offset parameters for a given analog input channel.
+    """
+    offset_map = {
+        0: {'multiplier': 25, 'divisor': 27, 'offset': 29},
+        2: {'multiplier': 32, 'divisor': 34, 'offset': 36},
+        4: {'multiplier': 39, 'divisor': 41, 'offset': 43},
+        6: {'multiplier': 46, 'divisor': 48, 'offset': 50},
+    }
+    
+    map_entry = offset_map.get(offset)
+    if not map_entry:
+        logger.error("Unknown analog input offset: %s", offset)
+        return None, None, None
+
+    return (
+        get_io_offset_value(parent_offset + map_entry['multiplier']),
+        get_io_offset_value(parent_offset + map_entry['divisor']),
+        get_io_offset_value(parent_offset + map_entry['offset']),
+    )
+
+def _read_temp_in_params(offset: int, parent_offset: int) -> Tuple[int | None, int | None, int | None]:
+    """
+    Read multiplier, divisor, and offset parameters for a given temperature input channel.
+    """
+    offset_map = {
+        12: {'multiplier': 55, 'divisor': 57, 'offset': 59},
+        14: {'multiplier': 63, 'divisor': 65, 'offset': 67},
+    }
+    
+    map_entry = offset_map.get(offset)
+    if not map_entry:
+        logger.error("Unknown temperature input offset: %s", offset)
+        return None, None, None
+
+    return (
         get_io_offset_value(parent_offset + map_entry['multiplier']),
         get_io_offset_value(parent_offset + map_entry['divisor']),
         get_io_offset_value(parent_offset + map_entry['offset']),
