@@ -1,29 +1,33 @@
 # Notes de mise à jour (Release) - RevPiEpics
 
-## Nouveautés et Améliorations : Intégration avancée de la carte AIO
+## Nouveautés et Améliorations : Architecture, Flexibilité et Autosave
 
-### 1. Génération automatique de variables (Auto-PV)
-L'appel à `RevPiEpics.builder(...)` pour une entrée ou sortie dynamique de la carte AIO (Analogique et Température) ne se contente plus de créer une seule variable. Il déploie désormais **automatiquement 5 PVs EPICS** associés pour faciliter le pilotage :
-- Le signal principal de mesure (ex: `TEST:IN2_1`)
-- Son statut opérationnel (ex: `TEST:IN2_1:STATUS`)
-- Son échelle multiplicatrice (ex: `TEST:IN2_1:MULTIPLIER`)
-- Son échelle de division (ex: `TEST:IN2_1:DIVISEUR`)
-- Son décalage (ex: `TEST:IN2_1:OFFSET`)
+### 1. Refonte de l'Architecture Interne (IOMap)
+L'objet monolithique `IOMap` a été refactoré en une hiérarchie orientée objet plus propre. Désormais, les entrées/sorties analogiques utilisent la classe `AnalogIOMap`, ce qui allège l'empreinte mémoire des signaux binaires simples et supprime de nombreuses vérifications conditionnelles redondantes.
 
-### 2. Calcul mathématique déporté (SoftIOC)
-Le driver noyau RevPi interdisant la réécriture dynamique sur les offsets de configuration en cours d'exécution, la mise à l'échelle pour l'AIO ne dépend plus uniquement de la couche matérielle figée.
-- À l'initialisation, le système importe vos paramètres configurés dans **PiCtory** pour définir la base matérielle par défaut.
-- Ensuite, la mise à l'échelle (Multiplier, Divisor, Offset) s'effectue intégralement par le biais d'un calcul logiciel dynamique intégré à la boucle de synchronisation (`pvsync.py`).
+### 2. Intégration Native de l'Autosave (softioc.autosave)
+Il est maintenant possible d'activer la sauvegarde automatique des états de configuration EPICS :
+- **Activation Globale :** Dans `RevPiEpics.init(..., autosave=True, autosave_dir="/tmp/save")`.
+- **Contrôle Granulaire :** Lors de la création d'un PV analogique, vous pouvez spécifier `autosave_multiplier=True` ou `autosave_offset=True` pour sauvegarder ces paramètres.
+- Le paramètre natif `autosave=...` pour les variables principales est également supporté de base pour sauvegarder des tableaux (ex: `["PREC", "EGU", "VAL"]`).
 
-### 3. Édition temps-réel via EPICS
-L'opérateur ou un IHM peuvent librement modifier l'un des Soft PVs virtuels générés (comme `caput TEST:IN2_1:DIVISEUR 100`) pour ajuster instantanément la valeur des signaux en cours d'acquisition ou d'émission. Le moteur Python `RevPiEpics` récupère dynamiquement :
-* **En lecture** : la véritable mesure brute par *back-calcul* à l'aide des paramètres hardware initiaux, puis y applique vos nouvelles échelles logicielles.
-* **En écriture** : désescalade votre signal de commande EPICS selon vos paramètres logiciels, puis applique l'échelle matérielle pour fournir à la carte AIO la grandeur physique numérisée correcte attendue par le Convertisseur Numérique/Analogique.
+### 3. Simplification des Échelles Logicielles (Float PVs)
+L'ancien comportement qui générait un PV "DIVISEUR" entier a été retiré. Le système s'appuie désormais uniquement sur un `:MULTIPLIER` et un `:OFFSET`. Ces deux PVs sont aujourd'hui exportés en Record Flottant (`aOut`). Ils acceptent donc pleinement les mathématiques décimales (ex: `0.1` au lieu de diviser par `10`) et les valeurs négatives.
+
+### 4. Flexibilité sur les PVs de Statut
+Les PVs de statut (ex: `...:STATUS`) ne sont plus créés de manière forcée pour chaque I/O analogique. L'IHM gagne en flexibilité : il suffit de déclarer manuellement via `RevPiEpics.builder("InputStatus_1...")` les statuts à exposer sur le réseau.
+
+### 5. API Objet Enrichie
+L'objet RecordWrapper retourné par `RevPiEpics.builder(...)` lors du ciblage d'un module analogique embarque dorénavant ses propriétés filles. Vous pouvez ainsi dynamiquement piloter les paramètres internes via Python : `my_sensor.offset.set(10)`.
 
 ---
-### Fichiers impactés
-- **`aio.py`** : Refonte de `builder_aio` afin d'implémenter les multi-PVs, ajout de l'analyse des offsets de process image pour isoler les paramètres d'usine originels.
-- **`revpiepics.py`** : La méthode principale du constructeur accepte dorénavant un tableau groupé (List) contenant la structure IOMap éclatée par l'AIO.
-- **`iomap.py`** : Élargissement de la DataClass pour stocker les pointeurs EPICS vers les Soft PV (`pv_divisor`...) et préserver les constantes matérielles extraites (`hw_divisor`...).
-- **`pvsync.py`** : Les routines `_sync_input` et `_sync_output` englobent désormais de formidables algorithmes croisés inversant les signaux dynamiquement en l'espace de quelques millisecondes.
-- **`.gitignore`** : Présence garantie et vérifiée pour isoler les fichiers temporaires.
+
+## Fonctionnement du Moteur AIO (Rappel)
+
+### Calcul mathématique déporté (SoftIOC)
+À l'initialisation, le système importe vos paramètres logiciels figurant dans PiCtory pour calquer la base matérielle par défaut (hardware scale). La nouvelle mise à l'échelle demandée s'effectue intégralement par un calcul dynamique via des Soft PV intégrés dans la boucle interne (`pvsync.py`).
+
+### Édition temps-réel via EPICS
+Un opérateur peut librement modifier les Soft PVs virtuels générés (comme `caput IN2_1:MULTIPLIER 0.5`) pour ajuster instantanément le comportement :
+* **Lecture (IN)** : Calcul inversé depuis la valeur binaire (brute) à l'aide des paramètres hardware initiaux, puis application en direct de la nouvelle échelle EPICS.
+* **Écriture (OUT)** : Convertit la requête SCADA via l'échelle EPICS, puis réapplique l'échelle matérielle usine pour fournir la configuration binaire exacte exigée par le convertisseur DA.
