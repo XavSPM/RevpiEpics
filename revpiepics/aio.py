@@ -103,6 +103,10 @@ def builder_aio(
     autosave_offset = fields.pop('autosave_offset', autosave_params)
     autosave_multiplier = fields.pop('autosave_multiplier', autosave_params)
     
+    # Extract custom initial scaling values
+    initial_multiplier_override = fields.pop('initial_multiplier', None)
+    initial_offset_override = fields.pop('initial_offset', None)
+    
     # Initialize variables to track the created record and its properties
     record = None
     record_direction = None
@@ -255,14 +259,22 @@ def builder_aio(
 
             # Create Soft PVs for parameters as Analog (Float)
             initial_m = float(hw_m) / float(hw_d) if hw_d != 0 else float(hw_m)
+            if initial_multiplier_override is not None:
+                initial_m = float(initial_multiplier_override)
+                
             pv_m = builder.aOut(
                 f"{pv_name}:MULTIPLIER", 
                 initial_value=initial_m,
                 autosave=autosave_multiplier
             )
+            
+            initial_o = float(hw_o)
+            if initial_offset_override is not None:
+                initial_o = float(initial_offset_override)
+                
             pv_o = builder.aOut(
                 f"{pv_name}:OFFSET", 
-                initial_value=float(hw_o),
+                initial_value=initial_o,
                 autosave=autosave_offset
             )
 

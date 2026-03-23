@@ -241,8 +241,11 @@ class RevPiEpics:
                 au_p = fields.pop('autosave_params', False)
                 au_m = fields.pop('autosave_multiplier', False)
                 au_o = fields.pop('autosave_offset', False)
-                if any([au_p, au_m, au_o]):
-                    logger.warning(f"autosave_multiplier/offset is only applicable for Analog endpoints (ignored for '{io_name}')")
+                init_m = fields.pop('initial_multiplier', None)
+                init_o = fields.pop('initial_offset', None)
+                
+                if au_p or au_m or au_o or init_m is not None or init_o is not None:
+                    logger.warning(f"Soft scaling parameters are only applicable to Analog endpoints (ignored for '{io_name}')")
 
             # Use I/O name as PV name if not specified
             if pv_name is None:
@@ -256,8 +259,8 @@ class RevPiEpics:
                 au_o = fields.get('autosave_offset', False)
                 if any([au_base, au_p, au_m, au_o]):
                     logger.warning(
-                        f"L'option autosave=False dans RevPiEpics.init(), "
-                        f"les paramètres autosave pour le PV '{pv_name}' ne seront pas pris en compte."
+                        f"Autosave is disabled in RevPiEpics.init(), "
+                        f"autosave parameters for PV '{pv_name}' will be ignored."
                     )
 
             # Build with or without automatic prefixing
