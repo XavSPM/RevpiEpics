@@ -1,33 +1,34 @@
-# Notes de mise à jour (Release) - RevPiEpics
+# Release Notes - RevPiEpics v0.2.1
 
-## Nouveautés et Améliorations : Architecture, Flexibilité et Autosave
+## What's New: Architecture, Flexibility, and Autosave
 
-### 1. Refonte de l'Architecture Interne (IOMap)
-L'objet monolithique `IOMap` a été refactoré en une hiérarchie orientée objet plus propre. Désormais, les entrées/sorties analogiques utilisent la classe `AnalogIOMap`, ce qui allège l'empreinte mémoire des signaux binaires simples et supprime de nombreuses vérifications conditionnelles redondantes.
+### 1. Internal Architecture Refactoring (IOMap)
+The monolithic `IOMap` object has been refactored into a cleaner object-oriented hierarchy. Analog inputs/outputs now use the `AnalogIOMap` class, which reduces the memory footprint for simple binary signals and removes numerous redundant conditional checks.
 
-### 2. Intégration Native de l'Autosave (softioc.autosave)
-Il est maintenant possible d'activer la sauvegarde automatique des états de configuration EPICS :
-- **Activation Globale :** Dans `RevPiEpics.init(..., autosave=True, autosave_dir="/tmp/save")`.
-- **Contrôle Granulaire :** Lors de la création d'un PV analogique, vous pouvez spécifier `autosave_multiplier=True` ou `autosave_offset=True` pour sauvegarder ces paramètres.
-- Le paramètre natif `autosave=...` pour les variables principales est également supporté de base pour sauvegarder des tableaux (ex: `["PREC", "EGU", "VAL"]`).
+### 2. Native Autosave Integration (softioc.autosave)
+It is now possible to enable automatic backup of EPICS configuration states:
+- **Global Activation:** In `RevPiEpics.init(..., autosave=True, autosave_dir="/tmp/save")`.
+- **Granular Control:** When creating an analog PV, you can specify `autosave_multiplier=True` or `autosave_offset=True` to specifically save these parameters to the `.softsav` file.
+- The standard `autosave=...` parameter for primary variables is fully supported out of the box (e.g., `autosave=["PREC", "EGU", "VAL"]`).
 
-### 3. Simplification des Échelles Logicielles (Float PVs)
-L'ancien comportement qui générait un PV "DIVISEUR" entier a été retiré. Le système s'appuie désormais uniquement sur un `:MULTIPLIER` et un `:OFFSET`. Ces deux PVs sont aujourd'hui exportés en Record Flottant (`aOut`). Ils acceptent donc pleinement les mathématiques décimales (ex: `0.1` au lieu de diviser par `10`) et les valeurs négatives.
+### 3. Simplified Software Scaling (Float PVs)
+The previous behavior that generated an integer "DIVISOR" PV has been safely removed. The system now strictly relies on a `:MULTIPLIER` and an `:OFFSET`. Both PVs are now exported as Floating-point Records (`aOut`). They fully accept standard decimal computations (e.g. `0.1` instead of dividing by `10`) and negative values.
 
-### 4. Flexibilité sur les PVs de Statut
-Les PVs de statut (ex: `...:STATUS`) ne sont plus créés de manière forcée pour chaque I/O analogique. L'IHM gagne en flexibilité : il suffit de déclarer manuellement via `RevPiEpics.builder("InputStatus_1...")` les statuts à exposer sur le réseau.
+### 4. Direct Scaling Parameter Setup
+When building an analog I/O, developers can disregard PiCtory's system hardware defaults and manually inject the soft EPICS startup configuration straight from python:
+`RevPiEpics.builder("IN1", initial_multiplier=1.5, initial_offset=20.0)`
 
-### 5. API Objet Enrichie
-L'objet RecordWrapper retourné par `RevPiEpics.builder(...)` lors du ciblage d'un module analogique embarque dorénavant ses propriétés filles. Vous pouvez ainsi dynamiquement piloter les paramètres internes via Python : `my_sensor.offset.set(10)`.
+### 5. Enriched Object API
+The `RecordWrapper` Python object returned by `RevPiEpics.builder(...)` when targeting an analog module now structurally integrates its child scaling records. You can dynamically drive tracking parameters from Python execution logic: `my_sensor.offset.set(10)`.
 
 ---
 
-## Fonctionnement du Moteur AIO (Rappel)
+## AIO Engine Core Mechanics (Reminder)
 
-### Calcul mathématique déporté (SoftIOC)
-À l'initialisation, le système importe vos paramètres logiciels figurant dans PiCtory pour calquer la base matérielle par défaut (hardware scale). La nouvelle mise à l'échelle demandée s'effectue intégralement par un calcul dynamique via des Soft PV intégrés dans la boucle interne (`pvsync.py`).
+### Delegated Mathematical Computation (SoftIOC)
+At initialization, the system imports the software parameters mapped in PiCtory to establish an absolute factory baseline. The new scalable conversion is managed entirely by live synchronized computations across the soft PV backend (`pvsync.py`).
 
-### Édition temps-réel via EPICS
-Un opérateur peut librement modifier les Soft PVs virtuels générés (comme `caput IN2_1:MULTIPLIER 0.5`) pour ajuster instantanément le comportement :
-* **Lecture (IN)** : Calcul inversé depuis la valeur binaire (brute) à l'aide des paramètres hardware initiaux, puis application en direct de la nouvelle échelle EPICS.
-* **Écriture (OUT)** : Convertit la requête SCADA via l'échelle EPICS, puis réapplique l'échelle matérielle usine pour fournir la configuration binaire exacte exigée par le convertisseur DA.
+### Real-time EPICS Editing
+An operator can freely modify the mapped Soft PVs (like `caput IN2_1:MULTIPLIER 0.5`) to instantly adjust the underlying behavior:
+* **Reading (IN)**: Inverse calculation from the initial raw binary value scaling back to base zero, subsequently layered dynamically beneath the new EPICS ratio.
+* **Writing (OUT)**: Resolves the SCADA request according to the EPICS layer, then translates and applies the factory hardware ratio to pipeline directly to the Digital-to-Analog hardware converter.
