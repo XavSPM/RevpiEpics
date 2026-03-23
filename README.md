@@ -250,20 +250,25 @@ RevPiEpics.start(dispatcher=dispatcher)
 ### Initialization Parameters
 
 ```python
-RevPiEpics.init(
-    debug=True,          # Enable debug messages
-    cycletime=100,       # Update cycle in ms (default: 200ms)
-    auto_prefix=True,    # Use PiCtory names for prefixes
-    cleanup=True,        # Enable automatic cleanup on exit. 
-                         # Resets the default input/output value (PiControl) before exiting
-    autosave=True,       # Enable global state autosave
-    autosave_dir="/tmp", # Directory to store the softsav backup file
-    autosave_name="my_ioc", # Custom name for the .softsav file
-    autosave_period=10.0 # Autosave frequency in seconds
-)
+RevPiEpics.init()
 ```
 
+| Parameter | Description | Type | Default |
+|-----------|-------------|------|---------|
+| `cycletime` | Update cycle in milliseconds (min 20ms) | int | `200` |
+| `debug` | Enable debug messages and colored logs | bool | `False` |
+| `cleanup` | Enable PiControl cleanup on application exit. Resets the default input/output value (PiControl) before exiting | bool | `True` |
+| `auto_prefix` | Use PiCtory parent devices for PV prefixes | bool | `False` |
+| `autosave` | Enable `pythonSoftIOC` global state saving | bool | `False` |
+| `autosave_dir` | Directory to store `.softsav` backup files | str | `None` |
+| `autosave_name` | Name prefix for the generated save file | str | `"revpiepics"` |
+| `autosave_period` | Frequency of autosave in seconds | float | `30.0` |
+
 ### PV Configuration Options
+
+```python
+RevPiEpics.builder()
+```
 
 | Parameter | Description | Type | Example |
 |-----------|-------------|------|---------|
