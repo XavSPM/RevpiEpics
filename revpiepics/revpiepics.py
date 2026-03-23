@@ -256,9 +256,9 @@ class RevPiEpics:
                     
                     record = mapping[0].get_record()
                     if hasattr(mapping[0], 'pv_multiplier') and mapping[0].pv_multiplier is not None:
-                        record.multiplier = mapping[0].pv_multiplier
+                        object.__setattr__(record, 'multiplier', mapping[0].pv_multiplier)
                     if hasattr(mapping[0], 'pv_offset') and mapping[0].pv_offset is not None:
-                        record.offset = mapping[0].pv_offset
+                        object.__setattr__(record, 'offset', mapping[0].pv_offset)
                     return record
                 else:
                     cls._dictmap.add(mapping)
@@ -266,9 +266,9 @@ class RevPiEpics:
                     
                     record = mapping.get_record()
                     if hasattr(mapping, 'pv_multiplier') and mapping.pv_multiplier is not None:
-                        record.multiplier = mapping.pv_multiplier
+                        object.__setattr__(record, 'multiplier', mapping.pv_multiplier)
                     if hasattr(mapping, 'pv_offset') and mapping.pv_offset is not None:
-                        record.offset = mapping.pv_offset
+                        object.__setattr__(record, 'offset', mapping.pv_offset)
                     return record
             else:
                 return None
