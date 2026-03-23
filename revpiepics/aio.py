@@ -105,7 +105,20 @@ def builder_aio(
     
     # Extract custom initial scaling values
     initial_multiplier_override = fields.pop('initial_multiplier', None)
+    if initial_multiplier_override is not None:
+        try:
+            initial_multiplier_override = float(initial_multiplier_override)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid initial_multiplier '{initial_multiplier_override}' for '{io_name}', must be numeric. Ignoring.")
+            initial_multiplier_override = None
+
     initial_offset_override = fields.pop('initial_offset', None)
+    if initial_offset_override is not None:
+        try:
+            initial_offset_override = float(initial_offset_override)
+        except (ValueError, TypeError):
+            logger.error(f"Invalid initial_offset '{initial_offset_override}' for '{io_name}', must be numeric. Ignoring.")
+            initial_offset_override = None
     
     # Initialize variables to track the created record and its properties
     record = None
