@@ -258,7 +258,10 @@ RevPiEpics.init(
 | `DRVH` | High limit (outputs) | float | `100.0` |
 | `autosave_multiplier` | Save AIO multiplier to disk | bool | `True` |
 | `autosave_offset` | Save AIO offset to disk | bool | `True` |
+| `autosave_params` | Save both AIO multiplier & offset | bool | `True` |
 | `autosave` | Native PV field autosave | bool/list | `True`, `["PREC", "EGU"]` |
+| `initial_multiplier` | Override default AIO scale | float | `1.5` |
+| `initial_offset` | Override default AIO offset | float | `20.0` |
 
 ## 🏗️ Architecture
 
